@@ -1,0 +1,14 @@
+2026/04/29-17:02:19.349 1eec Creating DB C:\Users\cocoi\OneDrive\Робочий стіл\railway\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb since it was missing.
+2026/04/29-17:02:19.359 1eec Reusing MANIFEST C:\Users\cocoi\OneDrive\Робочий стіл\railway\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/04/29-17:03:14.816 da8 Level-0 table #5: started
+2026/04/29-17:03:14.846 da8 Level-0 table #5: 998766 bytes OK
+2026/04/29-17:03:14.851 da8 Delete type=0 #3
+2026/04/29-17:03:23.346 1eec Level-0 table #7: started
+2026/04/29-17:03:23.387 1eec Level-0 table #7: 1110069 bytes OK
+2026/04/29-17:03:23.389 1eec Delete type=0 #4
+2026/04/29-17:03:24.397 da8 Compacting 1@1 + 1@2 files
+2026/04/29-17:03:24.443 da8 Generated table #8@1: 21733 keys, 989748 bytes
+2026/04/29-17:03:24.443 da8 Compacted 1@1 + 1@2 files => 989748 bytes
+2026/04/29-17:03:24.445 da8 compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/04/29-17:03:24.446 da8 Delete type=2 #5
+2026/04/29-17:03:24.446 da8 Delete type=2 #7
