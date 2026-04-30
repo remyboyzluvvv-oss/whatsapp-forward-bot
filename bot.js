@@ -1,4 +1,5 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
+const http = require('http');
 
 const TELEGRAM_TOKEN = '8687121399:AAFfQZ9NSL00swk76DpMzxzd6jvUhIBvh4I';
 const CHAT_ID = '632786488';
@@ -74,3 +75,12 @@ client.on('disconnected', reason => {
 });
 
 client.initialize();
+
+http
+  .createServer((req, res) => {
+    res.writeHead(200);
+    res.end('Bot is running');
+  })
+  .listen(process.env.PORT || 3000, () => {
+    console.log('Keep-alive server started');
+  });
