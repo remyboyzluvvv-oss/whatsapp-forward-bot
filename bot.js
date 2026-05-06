@@ -1,9 +1,9 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const http = require('http');
 
-const TELEGRAM_TOKEN = '8687121399:AAFfQZ9NSL00swk76DpMzxzd6jvUhIBvh4I';
-const CHAT_ID = '-5025047503';
-const GROUP_NAME = 'Барбосы';
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const CHAT_ID = process.env.CHAT_ID;
+const GROUP_NAME = process.env.GROUP_NAME;
 
 const client = new Client({
   authStrategy: new LocalAuth(),
