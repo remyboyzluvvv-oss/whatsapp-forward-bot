@@ -195,26 +195,11 @@
       }
     }
 
-    async function loadChats() {
-      if (isAddingRoute || isRouteSelectFocused) return;
-
-      const select = document.getElementById('chatSelect');
-      const previousSelection = userSelectedChatId || select.value;
-      const data = await jget('/api/chats');
-      select.innerHTML = data.allChats.map(c => {
-        const typeLabel = c.isGroup ? 'Группа' : 'Личка';
-        return `<option value="${esc(c.id)}" data-name="${esc(c.name)}">[${typeLabel}] ${esc(c.name)}</option>`;
-      }).join('');
-      if (previousSelection && data.allChats.some(c => c.id === previousSelection)) {
-        select.value = previousSelection;
-        userSelectedChatId = previousSelection;
-      } else if (data.allChats.length > 0) {
-        userSelectedChatId = data.allChats[0].id;
-      }
-
+    function renderRoutesList(monitored) {
       const list = document.getElementById('routesList');
-      list.innerHTML = data.monitored.length
-        ? data.monitored.map(r => `
+      const routes = Array.isArray(monitored) ? monitored : [];
+      list.innerHTML = routes.length
+        ? routes.map(r => `
           <li>
             <div><strong>${esc(r.chatName || r.chatId)}</strong></div>
             <div class="muted">WA: ${esc(r.chatId)}</div>
@@ -223,6 +208,34 @@
           </li>
         `).join('')
         : '<li class="muted">Нет подключённых чатов</li>';
+    }
+
+    async function loadMonitoredRoutes() {
+      const data = await jget('/api/routes');
+      renderRoutesList(data.monitored);
+    }
+
+    async function loadChatDropdown(force = false) {
+      if (!force && (isAddingRoute || isRouteSelectFocused)) return;
+
+      const select = document.getElementById('chatSelect');
+      const previousSelection = userSelectedChatId || select.value;
+      const data = await jget('/api/chats');
+      select.innerHTML = (data.allChats || []).map(c => {
+        const typeLabel = c.isGroup ? 'Группа' : 'Личка';
+        return `<option value="${esc(c.id)}" data-name="${esc(c.name)}">[${typeLabel}] ${esc(c.name)}</option>`;
+      }).join('');
+      if (previousSelection && data.allChats && data.allChats.some(c => c.id === previousSelection)) {
+        select.value = previousSelection;
+        userSelectedChatId = previousSelection;
+      } else if (data.allChats && data.allChats.length > 0) {
+        userSelectedChatId = data.allChats[0].id;
+      }
+    }
+
+    async function loadChats() {
+      await loadMonitoredRoutes();
+      await loadChatDropdown();
     }
 
     async function loadMessages() {
@@ -240,8 +253,9 @@
     }
 
     async function removeRoute(chatId) {
-      await jget(`/api/routes/${chatId}`, { method: 'DELETE' });
-      await loadChats();
+      const result = await jget(`/api/routes/${chatId}`, { method: 'DELETE' });
+      renderRoutesList(result.monitored);
+      await loadChatDropdown();
     }
     window.removeRoute = removeRoute;
 
@@ -267,7 +281,12 @@
           body: JSON.stringify({ chatId, chatName, telegramChatId })
         });
         document.getElementById('tgId').value = '';
-        await loadChats();
+        if (result.monitored) {
+          renderRoutesList(result.monitored);
+        } else {
+          await loadMonitoredRoutes();
+        }
+        await loadChatDropdown(true);
         notice.textContent = result.persisted
           ? 'Маршрут добавлен'
           : 'Маршрут добавлен (в памяти текущей сессии)';
@@ -298,7 +317,13 @@
     });
 
     async function refresh() {
-      await Promise.allSettled([loadStatus(), loadQr(), loadChats(), loadMessages()]);
+      await Promise.allSettled([
+        loadStatus(),
+        loadQr(),
+        loadMonitoredRoutes(),
+        loadChatDropdown(),
+        loadMessages()
+      ]);
     }
 
     const chatSelectEl = document.getElementById('chatSelect');

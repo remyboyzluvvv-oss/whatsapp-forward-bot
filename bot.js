@@ -329,10 +329,24 @@ http.createServer(async (req, res) => {
           }))
           .sort((a, b) => a.name.localeCompare(b.name));
 
-        sendJson(res, 200, { allChats, monitored: Array.from(state.monitoredChats.values()) });
+        sendJson(res, 200, {
+          allChats,
+          monitored: Array.from(state.monitoredChats.values()),
+          whatsappReady: true
+        });
       } catch (error) {
-        sendJson(res, 503, { error: 'WhatsApp is not ready yet' });
+        sendJson(res, 200, {
+          allChats: [],
+          monitored: Array.from(state.monitoredChats.values()),
+          whatsappReady: false,
+          error: 'WhatsApp is not ready yet'
+        });
       }
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/routes') {
+      sendJson(res, 200, { monitored: Array.from(state.monitoredChats.values()) });
       return;
     }
 
@@ -352,7 +366,11 @@ http.createServer(async (req, res) => {
           telegramChatId: String(telegramChatId)
         });
         const saved = await saveRoutesToDisk();
-        sendJson(res, 200, { ok: true, persisted: saved });
+        sendJson(res, 200, {
+          ok: true,
+          persisted: saved,
+          monitored: Array.from(state.monitoredChats.values())
+        });
       } catch (error) {
         if (!chatName) {
           sendJson(res, 404, { error: 'Chat not found in WhatsApp account' });
@@ -367,7 +385,8 @@ http.createServer(async (req, res) => {
         sendJson(res, 200, {
           ok: true,
           persisted: saved,
-          warning: 'Chat was saved with fallback name'
+          warning: 'Chat was saved with fallback name',
+          monitored: Array.from(state.monitoredChats.values())
         });
       }
       return;
@@ -377,7 +396,11 @@ http.createServer(async (req, res) => {
       const chatId = decodeURIComponent(pathname.replace('/api/routes/', ''));
       state.monitoredChats.delete(normalizeChatId(chatId));
       const saved = await saveRoutesToDisk();
-      sendJson(res, 200, { ok: true, persisted: saved });
+      sendJson(res, 200, {
+        ok: true,
+        persisted: saved,
+        monitored: Array.from(state.monitoredChats.values())
+      });
       return;
     }
 
