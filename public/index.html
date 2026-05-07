@@ -5,21 +5,39 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WhatsApp Bot Control</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; background: #f5f7fb; color: #1f2937; }
+    :root {
+      --bg: #f5f7fb;
+      --text: #1f2937;
+      --card: #ffffff;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --btn: #2563eb;
+      --btn-secondary: #6b7280;
+    }
+    body.dark {
+      --bg: #111827;
+      --text: #e5e7eb;
+      --card: #1f2937;
+      --muted: #94a3b8;
+      --line: #334155;
+      --btn: #3b82f6;
+      --btn-secondary: #475569;
+    }
+    body { font-family: Arial, sans-serif; margin: 20px; background: var(--bg); color: var(--text); transition: background .2s ease, color .2s ease; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(320px,1fr)); gap: 16px; }
-    .card { background: white; border-radius: 10px; padding: 16px; box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+    .card { background: var(--card); border-radius: 10px; padding: 16px; box-shadow: 0 2px 10px rgba(0,0,0,.06); }
     h1 { margin-bottom: 16px; }
     h2 { margin-top: 0; font-size: 18px; }
     .status { font-weight: 700; }
     .status.connected { color: #0f9d58; }
     .status.disconnected { color: #d93025; }
     label, input, select, button { font-size: 14px; }
-    input, select { width: 100%; padding: 8px; margin-top: 6px; margin-bottom: 10px; box-sizing: border-box; }
+    input, select { width: 100%; padding: 8px; margin-top: 6px; margin-bottom: 10px; box-sizing: border-box; border: 1px solid var(--line); background: var(--card); color: var(--text); }
     button {
       padding: 8px 12px;
       border: 0;
       border-radius: 8px;
-      background: #2563eb;
+      background: var(--btn);
       color: white;
       cursor: pointer;
       transition: transform 120ms ease, opacity 120ms ease, box-shadow 160ms ease, background 160ms ease;
@@ -43,16 +61,47 @@
       animation: spin .8s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    button.secondary { background: #6b7280; }
+    button.secondary { background: var(--btn-secondary); }
     ul { list-style: none; padding: 0; margin: 0; }
-    li { border-bottom: 1px solid #e5e7eb; padding: 8px 0; }
-    .muted { color: #6b7280; font-size: 12px; }
+    li { border-bottom: 1px solid var(--line); padding: 8px 0; }
+    .muted { color: var(--muted); font-size: 12px; }
     .notice { margin-top: 8px; font-size: 12px; color: #1d4ed8; min-height: 16px; }
     .notice.error { color: #b91c1c; }
-    #qr { max-width: 260px; width: 100%; border: 1px solid #e5e7eb; border-radius: 8px; }
+    #qr { max-width: 260px; width: 100%; border: 1px solid var(--line); border-radius: 8px; }
+    .toolbar { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+    .theme-switch { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); user-select: none; }
+    .theme-switch input { display: none; }
+    .slider {
+      width: 44px;
+      height: 24px;
+      border-radius: 999px;
+      background: #9ca3af;
+      position: relative;
+      transition: background .2s ease;
+    }
+    .slider::after {
+      content: '';
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #fff;
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      transition: transform .2s ease;
+    }
+    .theme-switch input:checked + .slider { background: #2563eb; }
+    .theme-switch input:checked + .slider::after { transform: translateX(20px); }
   </style>
 </head>
 <body>
+  <div class="toolbar">
+    <label class="theme-switch">
+      <span>Темная тема</span>
+      <input id="themeToggle" type="checkbox" />
+      <span class="slider"></span>
+    </label>
+  </div>
   <h1>Управление WhatsApp ботом</h1>
   <div class="grid">
     <section class="card">
@@ -93,6 +142,10 @@
   </div>
 
   <script>
+    let isAddingRoute = false;
+    let isRouteSelectFocused = false;
+    let userSelectedChatId = '';
+
     function esc(v) {
       return String(v ?? '')
         .replaceAll('&', '&amp;')
@@ -137,15 +190,20 @@
     }
 
     async function loadChats() {
-      const previousSelection = document.getElementById('chatSelect').value;
-      const data = await jget('/api/chats');
+      if (isAddingRoute || isRouteSelectFocused) return;
+
       const select = document.getElementById('chatSelect');
+      const previousSelection = userSelectedChatId || select.value;
+      const data = await jget('/api/chats');
       select.innerHTML = data.allChats.map(c => {
         const typeLabel = c.isGroup ? 'Группа' : 'Личка';
         return `<option value="${esc(c.id)}" data-name="${esc(c.name)}">[${typeLabel}] ${esc(c.name)}</option>`;
       }).join('');
       if (previousSelection && data.allChats.some(c => c.id === previousSelection)) {
         select.value = previousSelection;
+        userSelectedChatId = previousSelection;
+      } else if (data.allChats.length > 0) {
+        userSelectedChatId = data.allChats[0].id;
       }
 
       const list = document.getElementById('routesList');
@@ -193,6 +251,7 @@
       if (!chatId || !telegramChatId) return;
 
       const addBtn = document.getElementById('addRouteBtn');
+      isAddingRoute = true;
       addBtn.disabled = true;
       addBtn.classList.add('is-loading');
       try {
@@ -210,6 +269,7 @@
         notice.textContent = `Ошибка: ${error.message}`;
         notice.className = 'notice error';
       } finally {
+        isAddingRoute = false;
         addBtn.disabled = false;
         addBtn.classList.remove('is-loading');
       }
@@ -231,6 +291,29 @@
     async function refresh() {
       await Promise.allSettled([loadStatus(), loadQr(), loadChats(), loadMessages()]);
     }
+
+    const chatSelectEl = document.getElementById('chatSelect');
+    chatSelectEl.addEventListener('focus', () => {
+      isRouteSelectFocused = true;
+    });
+    chatSelectEl.addEventListener('blur', () => {
+      isRouteSelectFocused = false;
+    });
+    chatSelectEl.addEventListener('change', () => {
+      userSelectedChatId = chatSelectEl.value;
+    });
+
+    const themeToggle = document.getElementById('themeToggle');
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    if (savedTheme === 'dark') {
+      document.body.classList.add('dark');
+      themeToggle.checked = true;
+    }
+    themeToggle.addEventListener('change', () => {
+      const dark = themeToggle.checked;
+      document.body.classList.toggle('dark', dark);
+      localStorage.setItem('theme', dark ? 'dark' : 'light');
+    });
 
     refresh();
     setInterval(refresh, 5000);
