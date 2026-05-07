@@ -28,8 +28,12 @@ async function loadRoutesFromDisk() {
     const parsed = JSON.parse(content);
     if (Array.isArray(parsed)) {
       for (const item of parsed) {
-        if (item.chatId && item.chatName && item.telegramChatId) {
-          state.monitoredChats.set(item.chatId, item);
+        if (item.chatId && item.telegramChatId) {
+          state.monitoredChats.set(item.chatId, {
+            chatId: item.chatId,
+            chatName: item.chatName || item.chatId,
+            telegramChatId: String(item.telegramChatId)
+          });
         }
       }
     }
@@ -130,6 +134,17 @@ async function resolveSenderName(msg) {
   }
 }
 
+function resolveChatName(chat) {
+  return (
+    chat?.name ||
+    chat?.formattedTitle ||
+    chat?.contact?.pushname ||
+    chat?.contact?.name ||
+    chat?.id?._serialized ||
+    'Без названия'
+  );
+}
+
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
@@ -197,15 +212,17 @@ async function handleIncomingMessage(msg) {
       }
     }
 
-    const fromChatId = msg.from;
-    const route = state.monitoredChats.get(fromChatId);
+    const candidateChatIds = [msg.from, msg.to, msg.author].filter(Boolean);
+    const matchedChatId = candidateChatIds.find((id) => state.monitoredChats.has(id));
+    const route = matchedChatId ? state.monitoredChats.get(matchedChatId) : null;
     if (!route) {
       return;
     }
 
     const chat = await msg.getChat();
     const sender = await resolveSenderName(msg);
-    const caption = `📢 ${chat.name}\n👤 ${sender}`;
+    const chatName = resolveChatName(chat);
+    const caption = `📢 ${chatName}\n👤 ${sender}`;
 
     if (msg.hasMedia) {
       const mediaCaption = msg.body ? `${caption}\n💬 ${msg.body}` : caption;
@@ -218,7 +235,7 @@ async function handleIncomingMessage(msg) {
     pushRecentMessage({
       at: state.lastActivityAt,
       sourceChatId: route.chatId,
-      sourceChatName: route.chatName,
+      sourceChatName: route.chatName || chatName,
       telegramChatId: route.telegramChatId,
       sender,
       textPreview: msg.body || '[media]'
@@ -284,8 +301,9 @@ http.createServer(async (req, res) => {
           .filter((chat) => !chat.isStatus)
           .map((chat) => ({
             id: chat.id._serialized,
-            name: chat.name,
-            isGroup: chat.isGroup
+            name: resolveChatName(chat),
+            isGroup: chat.isGroup,
+            type: chat.isGroup ? 'group' : 'private'
           }))
           .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -298,7 +316,7 @@ http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && pathname === '/api/routes') {
       const body = await readRequestBody(req);
-      const { chatId, telegramChatId } = body;
+      const { chatId, telegramChatId, chatName } = body;
       if (!chatId || !telegramChatId) {
         sendJson(res, 400, { error: 'chatId and telegramChatId are required' });
         return;
@@ -307,13 +325,23 @@ http.createServer(async (req, res) => {
         const chat = await client.getChatById(chatId);
         state.monitoredChats.set(chatId, {
           chatId,
-          chatName: chat.name,
+          chatName: resolveChatName(chat),
           telegramChatId: String(telegramChatId)
         });
         await saveRoutesToDisk();
         sendJson(res, 200, { ok: true });
       } catch (error) {
-        sendJson(res, 404, { error: 'Chat not found in WhatsApp account' });
+        if (!chatName) {
+          sendJson(res, 404, { error: 'Chat not found in WhatsApp account' });
+          return;
+        }
+        state.monitoredChats.set(chatId, {
+          chatId,
+          chatName: String(chatName),
+          telegramChatId: String(telegramChatId)
+        });
+        await saveRoutesToDisk();
+        sendJson(res, 200, { ok: true, warning: 'Chat was saved with fallback name' });
       }
       return;
     }
