@@ -20,6 +20,7 @@ const state = {
   monitoredChats: new Map(),
   recentMessages: []
 };
+const processedMessageIds = new Set();
 
 async function loadRoutesFromDisk() {
   try {
@@ -184,11 +185,23 @@ client.on('disconnected', (reason) => {
   console.log('WhatsApp disconnected:', reason);
 });
 
-client.on('message', async (msg) => {
+async function handleIncomingMessage(msg) {
   try {
+    const msgId = msg?.id?._serialized;
+    if (msgId) {
+      if (processedMessageIds.has(msgId)) return;
+      processedMessageIds.add(msgId);
+      if (processedMessageIds.size > 500) {
+        const first = processedMessageIds.values().next().value;
+        processedMessageIds.delete(first);
+      }
+    }
+
     const fromChatId = msg.from;
     const route = state.monitoredChats.get(fromChatId);
-    if (!route) return;
+    if (!route) {
+      return;
+    }
 
     const chat = await msg.getChat();
     const sender = await resolveSenderName(msg);
@@ -213,7 +226,10 @@ client.on('message', async (msg) => {
   } catch (error) {
     console.error('Message processing error:', error);
   }
-});
+}
+
+client.on('message', handleIncomingMessage);
+client.on('message_create', handleIncomingMessage);
 
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
