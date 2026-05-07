@@ -20,6 +20,8 @@
     ul { list-style: none; padding: 0; margin: 0; }
     li { border-bottom: 1px solid #e5e7eb; padding: 8px 0; }
     .muted { color: #6b7280; font-size: 12px; }
+    .notice { margin-top: 8px; font-size: 12px; color: #1d4ed8; min-height: 16px; }
+    .notice.error { color: #b91c1c; }
     #qr { max-width: 260px; width: 100%; border: 1px solid #e5e7eb; border-radius: 8px; }
   </style>
 </head>
@@ -49,6 +51,7 @@
       <label for="tgId">Telegram канал / чат ID</label>
       <input id="tgId" placeholder="-1001234567890" />
       <button id="addRouteBtn">Добавить маршрут</button>
+      <div id="routeNotice" class="notice"></div>
     </section>
 
     <section class="card">
@@ -63,6 +66,15 @@
   </div>
 
   <script>
+    function esc(v) {
+      return String(v ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
     async function jget(url, opts) {
       const r = await fetch(url, opts);
       if (!r.ok) throw new Error(await r.text());
@@ -98,17 +110,25 @@
     }
 
     async function loadChats() {
+      const previousSelection = document.getElementById('chatSelect').value;
       const data = await jget('/api/chats');
       const select = document.getElementById('chatSelect');
-      select.innerHTML = data.allChats.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+      select.innerHTML = data.allChats.map(c => {
+        const typeLabel = c.isGroup ? 'Группа' : 'Личка';
+        return `<option value="${esc(c.id)}" data-name="${esc(c.name)}">[${typeLabel}] ${esc(c.name)}</option>`;
+      }).join('');
+      if (previousSelection && data.allChats.some(c => c.id === previousSelection)) {
+        select.value = previousSelection;
+      }
 
       const list = document.getElementById('routesList');
       list.innerHTML = data.monitored.length
         ? data.monitored.map(r => `
           <li>
-            <div><strong>${r.chatName}</strong></div>
-            <div class="muted">→ Telegram: ${r.telegramChatId}</div>
-            <button onclick="removeRoute('${r.chatId}')">Убрать</button>
+            <div><strong>${esc(r.chatName || r.chatId)}</strong></div>
+            <div class="muted">WA: ${esc(r.chatId)}</div>
+            <div class="muted">→ Telegram: ${esc(r.telegramChatId)}</div>
+            <button onclick="removeRoute('${encodeURIComponent(r.chatId)}')">Убрать</button>
           </li>
         `).join('')
         : '<li class="muted">Нет подключённых чатов</li>';
@@ -129,22 +149,41 @@
     }
 
     async function removeRoute(chatId) {
-      await jget(`/api/routes/${encodeURIComponent(chatId)}`, { method: 'DELETE' });
+      await jget(`/api/routes/${chatId}`, { method: 'DELETE' });
       await loadChats();
     }
     window.removeRoute = removeRoute;
 
     document.getElementById('addRouteBtn').addEventListener('click', async () => {
-      const chatId = document.getElementById('chatSelect').value;
+      const notice = document.getElementById('routeNotice');
+      notice.textContent = '';
+      notice.className = 'notice';
+
+      const select = document.getElementById('chatSelect');
+      const chatId = select.value;
+      const chatName = select.options[select.selectedIndex]?.dataset?.name || '';
       const telegramChatId = document.getElementById('tgId').value.trim();
       if (!chatId || !telegramChatId) return;
-      await jget('/api/routes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId, telegramChatId })
-      });
-      document.getElementById('tgId').value = '';
-      await loadChats();
+
+      const addBtn = document.getElementById('addRouteBtn');
+      addBtn.disabled = true;
+      try {
+        const result = await jget('/api/routes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chatId, chatName, telegramChatId })
+        });
+        document.getElementById('tgId').value = '';
+        await loadChats();
+        notice.textContent = result.persisted
+          ? 'Маршрут добавлен'
+          : 'Маршрут добавлен (в памяти текущей сессии)';
+      } catch (error) {
+        notice.textContent = `Ошибка: ${error.message}`;
+        notice.className = 'notice error';
+      } finally {
+        addBtn.disabled = false;
+      }
     });
 
     document.getElementById('restartBtn').addEventListener('click', async () => {

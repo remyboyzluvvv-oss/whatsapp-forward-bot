@@ -46,7 +46,13 @@ async function loadRoutesFromDisk() {
 
 async function saveRoutesToDisk() {
   const routes = Array.from(state.monitoredChats.values());
-  await fs.writeFile(ROUTES_FILE, JSON.stringify(routes, null, 2), 'utf8');
+  try {
+    await fs.writeFile(ROUTES_FILE, JSON.stringify(routes, null, 2), 'utf8');
+    return true;
+  } catch (error) {
+    console.error('Failed to save routes file:', error.message);
+    return false;
+  }
 }
 
 function pushRecentMessage(entry) {
@@ -328,8 +334,8 @@ http.createServer(async (req, res) => {
           chatName: resolveChatName(chat),
           telegramChatId: String(telegramChatId)
         });
-        await saveRoutesToDisk();
-        sendJson(res, 200, { ok: true });
+        const saved = await saveRoutesToDisk();
+        sendJson(res, 200, { ok: true, persisted: saved });
       } catch (error) {
         if (!chatName) {
           sendJson(res, 404, { error: 'Chat not found in WhatsApp account' });
@@ -340,8 +346,12 @@ http.createServer(async (req, res) => {
           chatName: String(chatName),
           telegramChatId: String(telegramChatId)
         });
-        await saveRoutesToDisk();
-        sendJson(res, 200, { ok: true, warning: 'Chat was saved with fallback name' });
+        const saved = await saveRoutesToDisk();
+        sendJson(res, 200, {
+          ok: true,
+          persisted: saved,
+          warning: 'Chat was saved with fallback name'
+        });
       }
       return;
     }
@@ -349,8 +359,8 @@ http.createServer(async (req, res) => {
     if (req.method === 'DELETE' && pathname.startsWith('/api/routes/')) {
       const chatId = decodeURIComponent(pathname.replace('/api/routes/', ''));
       state.monitoredChats.delete(chatId);
-      await saveRoutesToDisk();
-      sendJson(res, 200, { ok: true });
+      const saved = await saveRoutesToDisk();
+      sendJson(res, 200, { ok: true, persisted: saved });
       return;
     }
 
