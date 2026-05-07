@@ -1,59 +1,76 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const http = require('http');
+const fs = require('fs/promises');
+const path = require('path');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const CHAT_ID = process.env.CHAT_ID;
-const GROUP_NAME = process.env.GROUP_NAME;
+const DEFAULT_TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || process.env.CHAT_ID || '';
+const PORT = process.env.PORT || 3000;
+const ROUTES_FILE = path.join(__dirname, 'routes.json');
 
-const client = new Client({
-  authStrategy: new LocalAuth(),
-  puppeteer: {
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--no-first-run',
-      '--no-zygote'
-    ]
+if (!TELEGRAM_TOKEN) {
+  throw new Error('TELEGRAM_TOKEN is required');
+}
+
+const state = {
+  sessionStatus: 'disconnected',
+  phoneNumber: null,
+  lastActivityAt: null,
+  qrData: null,
+  monitoredChats: new Map(),
+  recentMessages: []
+};
+
+async function loadRoutesFromDisk() {
+  try {
+    const content = await fs.readFile(ROUTES_FILE, 'utf8');
+    const parsed = JSON.parse(content);
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) {
+        if (item.chatId && item.chatName && item.telegramChatId) {
+          state.monitoredChats.set(item.chatId, item);
+        }
+      }
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.error('Failed to load routes file:', error);
+    }
   }
-});
+}
 
-client.on('qr', qr => {
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qr)}`;
-  console.log('Открой эту ссылку и отсканируй QR:');
-  console.log(qrUrl);
-});
+async function saveRoutesToDisk() {
+  const routes = Array.from(state.monitoredChats.values());
+  await fs.writeFile(ROUTES_FILE, JSON.stringify(routes, null, 2), 'utf8');
+}
 
-client.on('authenticated', () => {
-  console.log('WhatsApp авторизация успешна');
-});
+function pushRecentMessage(entry) {
+  state.recentMessages.unshift(entry);
+  if (state.recentMessages.length > 50) {
+    state.recentMessages.length = 50;
+  }
+}
 
-client.on('ready', () => {
-  console.log('WhatsApp подключен. Бот работает.');
-});
+async function sendTelegramMessage(endpoint, body) {
+  const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/${endpoint}`, body);
+  const result = await response.json();
+  if (!result.ok) {
+    throw new Error(result.description || 'Telegram API error');
+  }
+}
 
-client.on('disconnected', reason => {
-  console.log('WhatsApp отключился:', reason);
-});
-
-async function sendTextToTelegram(text) {
-  await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+async function sendTextToTelegram(chatId, text) {
+  await sendTelegramMessage('sendMessage', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: CHAT_ID,
-      text
-    })
+    body: JSON.stringify({ chat_id: chatId, text })
   });
 }
 
-async function sendMediaToTelegram(msg, caption) {
+async function sendMediaToTelegram(chatId, msg, caption) {
   const media = await msg.downloadMedia();
-
   if (!media) {
-    await sendTextToTelegram(`${caption}\n\n[Не удалось скачать медиа]`);
+    await sendTextToTelegram(chatId, `${caption}\n\n[Не удалось скачать медиа]`);
     return;
   }
 
@@ -61,7 +78,7 @@ async function sendMediaToTelegram(msg, caption) {
   const blob = new Blob([buffer], { type: media.mimetype });
   const form = new FormData();
 
-  form.append('chat_id', CHAT_ID);
+  form.append('chat_id', chatId);
   form.append('caption', caption);
 
   let endpoint = 'sendDocument';
@@ -83,53 +100,232 @@ async function sendMediaToTelegram(msg, caption) {
   }
 
   form.append(fieldName, blob, filename);
-
-  const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/${endpoint}`, {
+  await sendTelegramMessage(endpoint, {
     method: 'POST',
     body: form
   });
-
-  const result = await response.json();
-
-  if (!result.ok) {
-    console.log('Ошибка Telegram media:', result);
-    await sendTextToTelegram(`${caption}\n\n[Медиа не отправилось: ${result.description}]`);
-  } else {
-    console.log('Медиа отправлено в Telegram');
-  }
 }
 
-client.on('message_create', async msg => {
+const client = new Client({
+  authStrategy: new LocalAuth(),
+  puppeteer: {
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-first-run',
+      '--no-zygote'
+    ]
+  }
+});
+
+client.on('qr', (qr) => {
+  state.qrData = qr;
+  state.sessionStatus = 'disconnected';
+  console.log('QR code generated');
+});
+
+client.on('authenticated', () => {
+  state.sessionStatus = 'authenticated';
+  state.qrData = null;
+  console.log('WhatsApp authenticated');
+});
+
+client.on('ready', async () => {
+  state.sessionStatus = 'connected';
+  state.qrData = null;
+  const info = client.info;
+  state.phoneNumber = info?.wid?.user || null;
+  console.log('WhatsApp is ready');
+
+  if (DEFAULT_TELEGRAM_CHAT_ID && state.monitoredChats.size === 0) {
+    const chats = await client.getChats();
+    const firstGroup = chats.find((chat) => chat.isGroup);
+    if (firstGroup) {
+      state.monitoredChats.set(firstGroup.id._serialized, {
+        chatId: firstGroup.id._serialized,
+        chatName: firstGroup.name,
+        telegramChatId: DEFAULT_TELEGRAM_CHAT_ID
+      });
+      await saveRoutesToDisk();
+      console.log(`Default route added for ${firstGroup.name}`);
+    }
+  }
+});
+
+client.on('disconnected', (reason) => {
+  state.sessionStatus = 'disconnected';
+  state.phoneNumber = null;
+  console.log('WhatsApp disconnected:', reason);
+});
+
+client.on('message', async (msg) => {
   try {
+    const fromChatId = msg.from;
+    const route = state.monitoredChats.get(fromChatId);
+    if (!route) return;
+
     const chat = await msg.getChat();
-
-    if (!chat.isGroup || chat.name !== GROUP_NAME) return;
-
     const contact = await msg.getContact();
-    const sender = contact.pushname || contact.number || 'Неизвестный';
-
+    const sender = contact.pushname || contact.name || contact.number || 'Неизвестный';
     const caption = `📢 ${chat.name}\n👤 ${sender}`;
 
     if (msg.hasMedia) {
-      const mediaCaption = msg.body
-        ? `${caption}\n💬 ${msg.body}`
-        : caption;
-
-      await sendMediaToTelegram(msg, mediaCaption);
+      const mediaCaption = msg.body ? `${caption}\n💬 ${msg.body}` : caption;
+      await sendMediaToTelegram(route.telegramChatId, msg, mediaCaption);
     } else {
-      await sendTextToTelegram(`${caption}\n💬 ${msg.body}`);
-      console.log('Текст отправлен в Telegram');
+      await sendTextToTelegram(route.telegramChatId, `${caption}\n💬 ${msg.body || '[пустое сообщение]'}`);
     }
+
+    state.lastActivityAt = new Date().toISOString();
+    pushRecentMessage({
+      at: state.lastActivityAt,
+      sourceChatId: route.chatId,
+      sourceChatName: route.chatName,
+      telegramChatId: route.telegramChatId,
+      sender,
+      textPreview: msg.body || '[media]'
+    });
   } catch (error) {
-    console.error('Ошибка обработки сообщения:', error);
+    console.error('Message processing error:', error);
   }
 });
 
-client.initialize();
+function sendJson(res, statusCode, payload) {
+  res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(payload));
+}
 
-http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('Bot is running');
-}).listen(process.env.PORT || 3000, () => {
-  console.log('Keep-alive server started');
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk) => {
+      data += chunk;
+    });
+    req.on('end', () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch (error) {
+        reject(new Error('Invalid JSON body'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const { pathname } = url;
+
+    if (req.method === 'GET' && pathname === '/api/status') {
+      sendJson(res, 200, {
+        sessionStatus: state.sessionStatus,
+        phoneNumber: state.phoneNumber,
+        lastActivityAt: state.lastActivityAt
+      });
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/qr') {
+      if (!state.qrData) {
+        sendJson(res, 200, { qr: null });
+        return;
+      }
+      const qr = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(state.qrData)}`;
+      sendJson(res, 200, { qr });
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/chats') {
+      try {
+        const chats = await client.getChats();
+        const allChats = chats
+          .filter((chat) => !chat.isStatus)
+          .map((chat) => ({
+            id: chat.id._serialized,
+            name: chat.name,
+            isGroup: chat.isGroup
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        sendJson(res, 200, { allChats, monitored: Array.from(state.monitoredChats.values()) });
+      } catch (error) {
+        sendJson(res, 503, { error: 'WhatsApp is not ready yet' });
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/routes') {
+      const body = await readRequestBody(req);
+      const { chatId, telegramChatId } = body;
+      if (!chatId || !telegramChatId) {
+        sendJson(res, 400, { error: 'chatId and telegramChatId are required' });
+        return;
+      }
+      try {
+        const chat = await client.getChatById(chatId);
+        state.monitoredChats.set(chatId, {
+          chatId,
+          chatName: chat.name,
+          telegramChatId: String(telegramChatId)
+        });
+        await saveRoutesToDisk();
+        sendJson(res, 200, { ok: true });
+      } catch (error) {
+        sendJson(res, 404, { error: 'Chat not found in WhatsApp account' });
+      }
+      return;
+    }
+
+    if (req.method === 'DELETE' && pathname.startsWith('/api/routes/')) {
+      const chatId = decodeURIComponent(pathname.replace('/api/routes/', ''));
+      state.monitoredChats.delete(chatId);
+      await saveRoutesToDisk();
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/messages') {
+      sendJson(res, 200, { items: state.recentMessages });
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/session/restart') {
+      try {
+        state.sessionStatus = 'disconnected';
+        state.qrData = null;
+        await client.destroy();
+        await client.initialize();
+        sendJson(res, 200, { ok: true });
+      } catch (error) {
+        sendJson(res, 500, { error: 'Failed to restart WhatsApp session' });
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/') {
+      const html = await fs.readFile(path.join(__dirname, 'public', 'index.html'), 'utf8');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Not Found');
+  } catch (error) {
+    sendJson(res, 500, { error: error.message || 'Server error' });
+  }
+}).listen(PORT, () => {
+  console.log(`Control panel started on port ${PORT}`);
 });
+
+loadRoutesFromDisk()
+  .catch((error) => {
+    console.error('Routes bootstrap error:', error);
+  })
+  .finally(() => {
+    client.initialize();
+  });
