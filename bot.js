@@ -106,6 +106,29 @@ async function sendMediaToTelegram(chatId, msg, caption) {
   });
 }
 
+async function resolveSenderName(msg) {
+  const fallback =
+    msg?._data?.notifyName ||
+    msg?._data?.sender?.pushname ||
+    msg?._data?.sender?.formattedName ||
+    msg?.author ||
+    msg?.from ||
+    'Неизвестный';
+
+  try {
+    const contact = await msg.getContact();
+    return (
+      contact?.pushname ||
+      contact?.name ||
+      contact?.number ||
+      fallback
+    );
+  } catch (error) {
+    console.warn('getContact failed, using fallback sender:', error.message);
+    return fallback;
+  }
+}
+
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
@@ -168,8 +191,7 @@ client.on('message', async (msg) => {
     if (!route) return;
 
     const chat = await msg.getChat();
-    const contact = await msg.getContact();
-    const sender = contact.pushname || contact.name || contact.number || 'Неизвестный';
+    const sender = await resolveSenderName(msg);
     const caption = `📢 ${chat.name}\n👤 ${sender}`;
 
     if (msg.hasMedia) {
