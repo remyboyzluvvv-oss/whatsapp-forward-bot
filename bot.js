@@ -18,7 +18,8 @@ const state = {
   lastActivityAt: null,
   qrData: null,
   monitoredChats: new Map(),
-  recentMessages: []
+  recentMessages: [],
+  restartInProgress: false
 };
 const processedMessageIds = new Set();
 
@@ -299,7 +300,8 @@ http.createServer(async (req, res) => {
       sendJson(res, 200, {
         sessionStatus: state.sessionStatus,
         phoneNumber: state.phoneNumber,
-        lastActivityAt: state.lastActivityAt
+        lastActivityAt: state.lastActivityAt,
+        restartInProgress: state.restartInProgress
       });
       return;
     }
@@ -385,15 +387,39 @@ http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && pathname === '/api/session/restart') {
-      try {
-        state.sessionStatus = 'disconnected';
-        state.qrData = null;
-        await client.destroy();
-        await client.initialize();
-        sendJson(res, 200, { ok: true });
-      } catch (error) {
-        sendJson(res, 500, { error: 'Failed to restart WhatsApp session' });
+      if (state.restartInProgress) {
+        sendJson(res, 200, { ok: true, restarting: true, message: 'Перезапуск уже выполняется' });
+        return;
       }
+      state.restartInProgress = true;
+      state.sessionStatus = 'disconnected';
+      state.qrData = null;
+      state.phoneNumber = null;
+      sendJson(res, 200, { ok: true, restarting: true });
+
+      setImmediate(async () => {
+        const safetyMs = 180_000;
+        const safety = setTimeout(() => {
+          if (state.restartInProgress) {
+            state.restartInProgress = false;
+            console.warn('WhatsApp restart: safety timeout cleared restartInProgress');
+          }
+        }, safetyMs);
+        try {
+          try {
+            await client.destroy();
+          } catch (destroyErr) {
+            console.warn('client.destroy during restart:', destroyErr.message || destroyErr);
+          }
+          await client.initialize();
+        } catch (error) {
+          console.error('WhatsApp session restart failed:', error);
+          state.sessionStatus = 'disconnected';
+        } finally {
+          clearTimeout(safety);
+          state.restartInProgress = false;
+        }
+      });
       return;
     }
 

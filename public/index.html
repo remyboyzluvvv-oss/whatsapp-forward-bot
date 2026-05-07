@@ -31,6 +31,7 @@
     .status { font-weight: 700; }
     .status.connected { color: #0f9d58; }
     .status.disconnected { color: #d93025; }
+    .status.restarting { color: #ca8a04; }
     label, input, select, button { font-size: 14px; }
     input, select { width: 100%; padding: 8px; margin-top: 6px; margin-bottom: 10px; box-sizing: border-box; border: 1px solid var(--line); background: var(--card); color: var(--text); }
     button {
@@ -168,8 +169,13 @@
     async function loadStatus() {
       const s = await jget('/api/status');
       const statusEl = document.getElementById('sessionStatus');
-      statusEl.textContent = s.sessionStatus;
-      statusEl.className = `status ${s.sessionStatus === 'connected' ? 'connected' : 'disconnected'}`;
+      if (s.restartInProgress) {
+        statusEl.textContent = 'restarting…';
+        statusEl.className = 'status restarting';
+      } else {
+        statusEl.textContent = s.sessionStatus;
+        statusEl.className = `status ${s.sessionStatus === 'connected' ? 'connected' : 'disconnected'}`;
+      }
       document.getElementById('phoneNumber').textContent = s.phoneNumber || '-';
       document.getElementById('lastActivity').textContent = fmtDate(s.lastActivityAt);
     }
@@ -281,7 +287,10 @@
       restartBtn.classList.add('is-loading');
       try {
         await jget('/api/session/restart', { method: 'POST' });
-        await refresh();
+        await loadStatus();
+        await loadQr();
+      } catch (error) {
+        alert('Перезапуск: ' + error.message);
       } finally {
         restartBtn.disabled = false;
         restartBtn.classList.remove('is-loading');
