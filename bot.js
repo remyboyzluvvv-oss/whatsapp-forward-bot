@@ -182,8 +182,38 @@ function resolveChatName(chat) {
   );
 }
 
+let disconnectUiTimer = null;
+
+function cancelDisconnectUiGrace() {
+  if (disconnectUiTimer) {
+    clearTimeout(disconnectUiTimer);
+    disconnectUiTimer = null;
+  }
+}
+
+function scheduleDisconnectUi() {
+  cancelDisconnectUiGrace();
+  disconnectUiTimer = setTimeout(() => {
+    disconnectUiTimer = null;
+    try {
+      const wid = client.info?.wid?.user;
+      if (wid) {
+        state.sessionStatus = 'connected';
+        state.phoneNumber = wid;
+        return;
+      }
+    } catch {
+      /* client может быть в процессе перезапуска */
+    }
+    state.sessionStatus = 'disconnected';
+    state.phoneNumber = null;
+  }, 1200);
+}
+
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: WHATSAPP_AUTH_DATA_PATH }),
+  takeoverOnConflict: true,
+  takeoverTimeoutMs: 6000,
   puppeteer: {
     headless: true,
     args: [
@@ -198,18 +228,21 @@ const client = new Client({
 });
 
 client.on('qr', (qr) => {
+  cancelDisconnectUiGrace();
   state.qrData = qr;
   state.sessionStatus = 'disconnected';
   console.log('QR code generated');
 });
 
 client.on('authenticated', () => {
+  cancelDisconnectUiGrace();
   state.sessionStatus = 'authenticated';
   state.qrData = null;
   console.log('WhatsApp authenticated');
 });
 
 client.on('ready', async () => {
+  cancelDisconnectUiGrace();
   state.sessionStatus = 'connected';
   state.qrData = null;
   const info = client.info;
@@ -233,9 +266,80 @@ client.on('ready', async () => {
 });
 
 client.on('disconnected', (reason) => {
-  state.sessionStatus = 'disconnected';
-  state.phoneNumber = null;
   console.log('WhatsApp disconnected:', reason);
+  scheduleDisconnectUi();
+});
+
+client.on('change_state', (waState) => {
+  console.log('WhatsApp change_state:', waState);
+});
+
+let reconnectInFlight = false;
+
+function isRecoverableBrowserError(msg, err) {
+  if (err && String(err.name || '').includes('Protocol')) return true;
+  const m = String(msg || '').toLowerCase();
+  return (
+    m.includes('execution context was destroyed') ||
+    m.includes('protocol error') ||
+    m.includes('target closed') ||
+    m.includes('session closed') ||
+    m.includes('navigation failed')
+  );
+}
+
+async function softReconnectWhatsApp(reason) {
+  if (reconnectInFlight || state.restartInProgress) {
+    console.warn('Reconnect skipped:', reason);
+    return;
+  }
+  reconnectInFlight = true;
+  console.warn('WhatsApp soft reconnect:', reason);
+  cancelDisconnectUiGrace();
+  await new Promise((r) => setTimeout(r, 2500));
+  try {
+    await client.destroy();
+  } catch (e) {
+    console.warn('client.destroy during soft reconnect:', e.message || e);
+  }
+  try {
+    await client.initialize();
+  } catch (e) {
+    console.error('client.initialize after soft reconnect failed:', e.message || e);
+    reconnectInFlight = false;
+    setTimeout(() => {
+      softReconnectWhatsApp('retry-after-failed-init').catch(() => {});
+    }, 12000);
+    return;
+  }
+  reconnectInFlight = false;
+}
+
+process.on('uncaughtException', (err) => {
+  const msg = err && err.message ? err.message : String(err);
+  if (isRecoverableBrowserError(msg, err)) {
+    console.warn('Recoverable browser error (uncaught):', msg);
+    reconnectInFlight = false;
+    softReconnectWhatsApp(msg).catch(() => {
+      reconnectInFlight = false;
+    });
+    return;
+  }
+  console.error('Uncaught exception:', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  const msg = reason && reason.message ? reason.message : String(reason);
+  if (isRecoverableBrowserError(msg, reason)) {
+    console.warn('Recoverable browser error (rejection):', msg);
+    reconnectInFlight = false;
+    softReconnectWhatsApp(msg).catch(() => {
+      reconnectInFlight = false;
+    });
+    return;
+  }
+  console.error('Unhandled rejection:', reason);
 });
 
 async function handleIncomingMessage(msg) {
@@ -442,6 +546,17 @@ http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && pathname === '/api/status') {
+      if (!state.restartInProgress && !state.qrData) {
+        try {
+          const wid = client.info?.wid?.user;
+          if (wid) {
+            state.sessionStatus = 'connected';
+            state.phoneNumber = wid;
+          }
+        } catch {
+          /* во время destroy/reinit client.info может быть недоступен */
+        }
+      }
       sendJson(res, 200, {
         sessionStatus: state.sessionStatus,
         phoneNumber: state.phoneNumber,
@@ -530,32 +645,6 @@ http.createServer(async (req, res) => {
         monitored: Array.from(state.monitoredChats.values())
       });
 
-      setImmediate(async () => {
-        const enrichMs = 5000;
-        try {
-          const chat = await Promise.race([
-            client.getChatById(chatId),
-            new Promise((_, reject) => {
-              setTimeout(() => reject(new Error('getChatById timeout')), enrichMs);
-            })
-          ]);
-          if (!chat) return;
-          const key = normalizeChatId(chat.id._serialized);
-          state.monitoredChats.set(key, {
-            chatId: chat.id._serialized,
-            chatName: resolveChatName(chat),
-            telegramChatId: String(telegramChatId)
-          });
-          if (key !== mapKey) {
-            state.monitoredChats.delete(mapKey);
-          }
-          await saveRoutesToDisk();
-          console.log('Route enriched from WhatsApp:', key, resolveChatName(chat));
-        } catch (e) {
-          console.warn('Route enrich skipped:', e.message || e);
-        }
-      });
-
       return;
     }
 
@@ -582,6 +671,7 @@ http.createServer(async (req, res) => {
         return;
       }
       state.restartInProgress = true;
+      cancelDisconnectUiGrace();
       state.sessionStatus = 'disconnected';
       state.qrData = null;
       state.phoneNumber = null;
@@ -643,7 +733,12 @@ async function bootstrap() {
   }
   console.log('WhatsApp auth data path:', WHATSAPP_AUTH_DATA_PATH);
   console.log('Routes file:', ROUTES_FILE);
-  client.initialize();
+  try {
+    await client.initialize();
+  } catch (e) {
+    console.error('Initial client.initialize failed:', e.message || e);
+    softReconnectWhatsApp('bootstrap-initialize').catch(() => {});
+  }
 }
 
-bootstrap();
+bootstrap().catch((e) => console.error('bootstrap():', e));
