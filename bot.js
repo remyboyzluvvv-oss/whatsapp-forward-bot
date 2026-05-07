@@ -294,7 +294,10 @@ function readRequestBody(req) {
 http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const { pathname } = url;
+    let pathname = url.pathname;
+    if (pathname.length > 1 && pathname.endsWith('/')) {
+      pathname = pathname.slice(0, -1);
+    }
 
     if (req.method === 'GET' && pathname === '/api/status') {
       sendJson(res, 200, {
@@ -353,43 +356,57 @@ http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname === '/api/routes') {
       const body = await readRequestBody(req);
       const { chatId, telegramChatId, chatName: chatNameRaw } = body;
+      console.log('POST /api/routes body:', { chatId, telegramChatId, chatName: chatNameRaw });
+
       if (!chatId || !telegramChatId) {
         sendJson(res, 400, { error: 'chatId and telegramChatId are required' });
         return;
       }
-      const normalizedChatId = normalizeChatId(chatId);
+
       const hint = (chatNameRaw && String(chatNameRaw).trim()) || '';
+      const mapKey = normalizeChatId(chatId);
+      const fastName = hint || `Чат ${String(chatId).split('@')[0]}`;
 
-      let chat = null;
-      try {
-        chat = await client.getChatById(chatId);
-      } catch (lookupErr) {
-        try {
-          chat = await client.getChatById(normalizedChatId);
-        } catch {
-          console.warn('getChatById failed, saving route by id only:', lookupErr.message || lookupErr);
-        }
-      }
-
-      const resolvedChatId = chat?.id?._serialized || chatId;
-      const resolvedName = chat
-        ? resolveChatName(chat)
-        : hint || `Чат ${String(resolvedChatId).split('@')[0]}`;
-
-      state.monitoredChats.set(normalizeChatId(resolvedChatId), {
-        chatId: resolvedChatId,
-        chatName: resolvedName,
+      state.monitoredChats.set(mapKey, {
+        chatId,
+        chatName: fastName,
         telegramChatId: String(telegramChatId)
       });
       const saved = await saveRoutesToDisk();
-      console.log('Route saved:', normalizeChatId(resolvedChatId), resolvedName);
+      console.log('Route saved (fast path):', mapKey, fastName);
 
       sendJson(res, 200, {
         ok: true,
         persisted: saved,
-        warning: chat ? undefined : 'Сохранено по ID (WhatsApp не вернул чат через getChatById)',
         monitored: Array.from(state.monitoredChats.values())
       });
+
+      setImmediate(async () => {
+        const enrichMs = 5000;
+        try {
+          const chat = await Promise.race([
+            client.getChatById(chatId),
+            new Promise((_, reject) => {
+              setTimeout(() => reject(new Error('getChatById timeout')), enrichMs);
+            })
+          ]);
+          if (!chat) return;
+          const key = normalizeChatId(chat.id._serialized);
+          state.monitoredChats.set(key, {
+            chatId: chat.id._serialized,
+            chatName: resolveChatName(chat),
+            telegramChatId: String(telegramChatId)
+          });
+          if (key !== mapKey) {
+            state.monitoredChats.delete(mapKey);
+          }
+          await saveRoutesToDisk();
+          console.log('Route enriched from WhatsApp:', key, resolveChatName(chat));
+        } catch (e) {
+          console.warn('Route enrich skipped:', e.message || e);
+        }
+      });
+
       return;
     }
 

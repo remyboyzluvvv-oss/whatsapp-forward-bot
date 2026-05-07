@@ -281,7 +281,16 @@
       const fromLabel = opt ? opt.textContent.replace(/^\[[^\]]+\]\s*/, '').trim() : '';
       const chatName = fromDataset || fromLabel;
       const telegramChatId = document.getElementById('tgId').value.trim();
-      if (!chatId || !telegramChatId) return;
+      if (!chatId) {
+        notice.textContent = 'Выберите WhatsApp-чат в списке (если список пуст — подождите, пока статус connected и нажмите «Обновить» страницу).';
+        notice.className = 'notice error';
+        return;
+      }
+      if (!telegramChatId) {
+        notice.textContent = 'Введите Telegram ID канала/чата (например -100…)';
+        notice.className = 'notice error';
+        return;
+      }
 
       const addBtn = document.getElementById('addRouteBtn');
       isAddingRoute = true;
