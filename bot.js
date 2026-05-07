@@ -309,6 +309,13 @@ http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'GET' && pathname === '/api/config') {
+      sendJson(res, 200, {
+        defaultTelegramChatId: DEFAULT_TELEGRAM_CHAT_ID || ''
+      });
+      return;
+    }
+
     if (req.method === 'GET' && pathname === '/api/qr') {
       if (!state.qrData) {
         sendJson(res, 200, { qr: null });

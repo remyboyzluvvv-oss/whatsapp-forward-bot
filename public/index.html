@@ -146,6 +146,7 @@
     let isAddingRoute = false;
     let isRouteSelectFocused = false;
     let userSelectedChatId = '';
+    let uiConfigApplied = false;
 
     function esc(v) {
       return String(v ?? '')
@@ -174,6 +175,16 @@
 
     function fmtDate(v) {
       return v ? new Date(v).toLocaleString() : '-';
+    }
+
+    async function loadUiConfig() {
+      if (uiConfigApplied) return;
+      const data = await jget('/api/config');
+      uiConfigApplied = true;
+      const el = document.getElementById('tgId');
+      if (data.defaultTelegramChatId && el && !el.value.trim()) {
+        el.value = data.defaultTelegramChatId;
+      }
     }
 
     async function loadStatus() {
@@ -343,6 +354,7 @@
     async function refresh() {
       await Promise.allSettled([
         loadStatus(),
+        loadUiConfig(),
         loadQr(),
         loadMonitoredRoutes(),
         loadChatDropdown(),
