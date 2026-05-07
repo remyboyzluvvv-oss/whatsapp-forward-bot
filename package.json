@@ -5,6 +5,9 @@
   "scripts": {
     "start": "node bot.js"
   },
+  "engines": {
+    "node": "20.x"
+  },
   "dependencies": {
     "whatsapp-web.js": "^1.23.0",
     "qrcode-terminal": "^0.12.0"
