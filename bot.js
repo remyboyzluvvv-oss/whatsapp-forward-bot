@@ -352,43 +352,44 @@ http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && pathname === '/api/routes') {
       const body = await readRequestBody(req);
-      const { chatId, telegramChatId, chatName } = body;
+      const { chatId, telegramChatId, chatName: chatNameRaw } = body;
       if (!chatId || !telegramChatId) {
         sendJson(res, 400, { error: 'chatId and telegramChatId are required' });
         return;
       }
       const normalizedChatId = normalizeChatId(chatId);
+      const hint = (chatNameRaw && String(chatNameRaw).trim()) || '';
+
+      let chat = null;
       try {
-        const chat = await client.getChatById(chatId);
-        state.monitoredChats.set(normalizedChatId, {
-          chatId,
-          chatName: resolveChatName(chat),
-          telegramChatId: String(telegramChatId)
-        });
-        const saved = await saveRoutesToDisk();
-        sendJson(res, 200, {
-          ok: true,
-          persisted: saved,
-          monitored: Array.from(state.monitoredChats.values())
-        });
-      } catch (error) {
-        if (!chatName) {
-          sendJson(res, 404, { error: 'Chat not found in WhatsApp account' });
-          return;
+        chat = await client.getChatById(chatId);
+      } catch (lookupErr) {
+        try {
+          chat = await client.getChatById(normalizedChatId);
+        } catch {
+          console.warn('getChatById failed, saving route by id only:', lookupErr.message || lookupErr);
         }
-        state.monitoredChats.set(normalizedChatId, {
-          chatId,
-          chatName: String(chatName),
-          telegramChatId: String(telegramChatId)
-        });
-        const saved = await saveRoutesToDisk();
-        sendJson(res, 200, {
-          ok: true,
-          persisted: saved,
-          warning: 'Chat was saved with fallback name',
-          monitored: Array.from(state.monitoredChats.values())
-        });
       }
+
+      const resolvedChatId = chat?.id?._serialized || chatId;
+      const resolvedName = chat
+        ? resolveChatName(chat)
+        : hint || `Чат ${String(resolvedChatId).split('@')[0]}`;
+
+      state.monitoredChats.set(normalizeChatId(resolvedChatId), {
+        chatId: resolvedChatId,
+        chatName: resolvedName,
+        telegramChatId: String(telegramChatId)
+      });
+      const saved = await saveRoutesToDisk();
+      console.log('Route saved:', normalizeChatId(resolvedChatId), resolvedName);
+
+      sendJson(res, 200, {
+        ok: true,
+        persisted: saved,
+        warning: chat ? undefined : 'Сохранено по ID (WhatsApp не вернул чат через getChatById)',
+        monitored: Array.from(state.monitoredChats.values())
+      });
       return;
     }
 

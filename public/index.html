@@ -158,8 +158,18 @@
 
     async function jget(url, opts) {
       const r = await fetch(url, opts);
-      if (!r.ok) throw new Error(await r.text());
-      return r.json();
+      const text = await r.text();
+      if (!r.ok) {
+        let msg = text || `HTTP ${r.status}`;
+        try {
+          const errObj = JSON.parse(text);
+          if (errObj.error) msg = errObj.error;
+        } catch {
+          /* plain text body */
+        }
+        throw new Error(msg);
+      }
+      return text ? JSON.parse(text) : {};
     }
 
     function fmtDate(v) {
@@ -265,8 +275,11 @@
       notice.className = 'notice';
 
       const select = document.getElementById('chatSelect');
+      const opt = select.options[select.selectedIndex];
       const chatId = select.value;
-      const chatName = select.options[select.selectedIndex]?.dataset?.name || '';
+      const fromDataset = (opt && opt.dataset && opt.dataset.name) ? String(opt.dataset.name).trim() : '';
+      const fromLabel = opt ? opt.textContent.replace(/^\[[^\]]+\]\s*/, '').trim() : '';
+      const chatName = fromDataset || fromLabel;
       const telegramChatId = document.getElementById('tgId').value.trim();
       if (!chatId || !telegramChatId) return;
 
@@ -287,9 +300,11 @@
           await loadMonitoredRoutes();
         }
         await loadChatDropdown(true);
-        notice.textContent = result.persisted
-          ? 'Маршрут добавлен'
-          : 'Маршрут добавлен (в памяти текущей сессии)';
+        notice.textContent = result.warning
+          ? `${result.persisted ? 'Маршрут добавлен' : 'Маршрут добавлен (в памяти)'}. ${result.warning}`
+          : result.persisted
+            ? 'Маршрут добавлен'
+            : 'Маршрут добавлен (в памяти текущей сессии)';
       } catch (error) {
         notice.textContent = `Ошибка: ${error.message}`;
         notice.className = 'notice error';
