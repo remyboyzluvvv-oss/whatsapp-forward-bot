@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Вход — панель бота</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #111827; color: #e5e7eb; }
+    .box { background: #1f2937; padding: 28px 32px; border-radius: 12px; width: 100%; max-width: 360px; box-shadow: 0 4px 24px rgba(0,0,0,.35); }
+    h1 { margin: 0 0 8px; font-size: 20px; }
+    p { margin: 0 0 16px; color: #94a3b8; font-size: 14px; }
+    label { display: block; font-size: 14px; margin-bottom: 6px; color: #94a3b8; }
+    input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #334155; background: #111827; color: #e5e7eb; box-sizing: border-box; font-size: 15px; margin-bottom: 14px; }
+    button { width: 100%; padding: 10px; border: 0; border-radius: 8px; background: #2563eb; color: white; font-size: 15px; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+    button:active { transform: scale(0.99); }
+    .err { color: #f87171; font-size: 13px; margin-top: 10px; min-height: 18px; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>Панель управления</h1>
+    <p>Введите пароль для доступа.</p>
+    <label for="pwd">Пароль</label>
+    <input id="pwd" type="password" autocomplete="current-password" />
+    <button type="button" id="btn">Войти</button>
+    <div id="err" class="err"></div>
+  </div>
+  <script>
+    async function login() {
+      const err = document.getElementById('err');
+      err.textContent = '';
+      const password = document.getElementById('pwd').value;
+      const r = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password })
+      });
+      const text = await r.text();
+      if (!r.ok) {
+        try {
+          const j = JSON.parse(text);
+          err.textContent = j.error || text;
+        } catch {
+          err.textContent = text || 'Ошибка входа';
+        }
+        return;
+      }
+      window.location.href = '/';
+    }
+    document.getElementById('btn').addEventListener('click', login);
+    document.getElementById('pwd').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') login();
+    });
+  </script>
+</body>
+</html>

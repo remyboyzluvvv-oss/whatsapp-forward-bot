@@ -2,6 +2,7 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const http = require('http');
 const fs = require('fs/promises');
 const path = require('path');
+const crypto = require('crypto');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const DEFAULT_TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || process.env.CHAT_ID || '';
@@ -17,6 +18,14 @@ const WHATSAPP_AUTH_DATA_PATH = process.env.WHATSAPP_AUTH_PATH
   : PERSIST_DIR
     ? path.join(PERSIST_DIR, 'whatsapp-web-auth')
     : path.join(__dirname, '.wwebjs_auth');
+
+const SETTINGS_FILE = PERSIST_DIR
+  ? path.join(PERSIST_DIR, 'admin-settings.json')
+  : path.join(__dirname, 'admin-settings.json');
+
+let adminPassword = process.env.ADMIN_PASSWORD || '1111';
+const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
+const sessions = new Map();
 
 if (!TELEGRAM_TOKEN) {
   throw new Error('TELEGRAM_TOKEN is required');
@@ -306,12 +315,130 @@ function readRequestBody(req) {
   });
 }
 
+function sendJsonSetCookie(res, statusCode, payload, setCookie) {
+  const headers = { 'Content-Type': 'application/json; charset=utf-8' };
+  if (setCookie) headers['Set-Cookie'] = setCookie;
+  res.writeHead(statusCode, headers);
+  res.end(JSON.stringify(payload));
+}
+
+function parseCookies(header) {
+  const out = {};
+  if (!header || typeof header !== 'string') return out;
+  header.split(';').forEach((part) => {
+    const idx = part.indexOf('=');
+    if (idx === -1) return;
+    const k = part.slice(0, idx).trim();
+    let v = part.slice(idx + 1).trim();
+    try {
+      v = decodeURIComponent(v);
+    } catch {
+      /* ignore */
+    }
+    out[k] = v;
+  });
+  return out;
+}
+
+function getSessionToken(req) {
+  return parseCookies(req.headers.cookie).wa_panel || '';
+}
+
+function isAuthenticated(req) {
+  const t = getSessionToken(req);
+  if (!t || !sessions.has(t)) return false;
+  const exp = sessions.get(t);
+  if (Date.now() > exp) {
+    sessions.delete(t);
+    return false;
+  }
+  return true;
+}
+
+async function loadAdminSettings() {
+  try {
+    const raw = await fs.readFile(SETTINGS_FILE, 'utf8');
+    const j = JSON.parse(raw);
+    if (j.adminPassword && typeof j.adminPassword === 'string') {
+      adminPassword = j.adminPassword;
+    }
+  } catch (e) {
+    if (e.code !== 'ENOENT') {
+      console.error('admin-settings load:', e);
+    }
+  }
+}
+
+async function saveAdminPassword(newPass) {
+  adminPassword = newPass;
+  await fs.writeFile(SETTINGS_FILE, JSON.stringify({ adminPassword: newPass }, null, 2), 'utf8');
+}
+
 http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     let pathname = url.pathname;
     if (pathname.length > 1 && pathname.endsWith('/')) {
       pathname = pathname.slice(0, -1);
+    }
+
+    if (req.method === 'GET' && pathname === '/api/auth/status') {
+      sendJson(res, 200, { authenticated: isAuthenticated(req) });
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/auth/login') {
+      const body = await readRequestBody(req);
+      const pwd = body.password != null ? String(body.password) : '';
+      if (pwd !== adminPassword) {
+        sendJson(res, 401, { error: 'Неверный пароль' });
+        return;
+      }
+      const token = crypto.randomBytes(24).toString('hex');
+      sessions.set(token, Date.now() + SESSION_MS);
+      const maxAge = Math.floor(SESSION_MS / 1000);
+      sendJsonSetCookie(
+        res,
+        200,
+        { ok: true },
+        `wa_panel=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}`
+      );
+      return;
+    }
+
+    if (
+      pathname.startsWith('/api/') &&
+      pathname !== '/api/auth/login' &&
+      pathname !== '/api/auth/status'
+    ) {
+      if (!isAuthenticated(req)) {
+        sendJson(res, 401, { error: 'Unauthorized' });
+        return;
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/api/auth/logout') {
+      const t = getSessionToken(req);
+      if (t) sessions.delete(t);
+      sendJsonSetCookie(res, 200, { ok: true }, 'wa_panel=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0');
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/auth/password') {
+      const body = await readRequestBody(req);
+      const oldP = body.oldPassword != null ? String(body.oldPassword) : '';
+      const newP = body.newPassword != null ? String(body.newPassword) : '';
+      if (oldP !== adminPassword) {
+        sendJson(res, 403, { error: 'Неверный текущий пароль' });
+        return;
+      }
+      if (!newP || newP.length < 4) {
+        sendJson(res, 400, { error: 'Новый пароль не короче 4 символов' });
+        return;
+      }
+      await saveAdminPassword(newP);
+      sendJson(res, 200, { ok: true });
+      return;
     }
 
     if (req.method === 'GET' && pathname === '/api/status') {
@@ -326,7 +453,7 @@ http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && pathname === '/api/config') {
       sendJson(res, 200, {
-        defaultTelegramChatId: DEFAULT_TELEGRAM_CHAT_ID || '632786488'
+        defaultTelegramChatId: DEFAULT_TELEGRAM_CHAT_ID || '-5025047503'
       });
       return;
     }
@@ -487,7 +614,8 @@ http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && pathname === '/') {
-      const html = await fs.readFile(path.join(__dirname, 'public', 'index.html'), 'utf8');
+      const htmlFile = isAuthenticated(req) ? 'index.html' : 'login.html';
+      const html = await fs.readFile(path.join(__dirname, 'public', htmlFile), 'utf8');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(html);
       return;
@@ -509,6 +637,7 @@ async function bootstrap() {
     }
     await fs.mkdir(WHATSAPP_AUTH_DATA_PATH, { recursive: true });
     await loadRoutesFromDisk();
+    await loadAdminSettings();
   } catch (error) {
     console.error('Bootstrap error:', error);
   }

@@ -70,7 +70,8 @@
     .notice { margin-top: 8px; font-size: 12px; color: #1d4ed8; min-height: 16px; }
     .notice.error { color: #b91c1c; }
     #qr { max-width: 260px; width: 100%; border: 1px solid var(--line); border-radius: 8px; }
-    .toolbar { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+    .toolbar-right { display: inline-flex; align-items: center; gap: 12px; margin-left: auto; }
     .theme-switch { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); user-select: none; }
     .theme-switch input { display: none; }
     .slider {
@@ -98,11 +99,14 @@
 </head>
 <body>
   <div class="toolbar">
+    <button type="button" id="logoutBtn" class="secondary">Выйти</button>
+    <div class="toolbar-right">
     <label class="theme-switch">
       <span>Темная тема</span>
       <input id="themeToggle" type="checkbox" />
       <span class="slider"></span>
     </label>
+    </div>
   </div>
   <h1>Управление WhatsApp ботом</h1>
   <div class="grid">
@@ -137,6 +141,16 @@
       <ul id="routesList"></ul>
     </section>
 
+    <section class="card">
+      <h2>Пароль панели</h2>
+      <label for="oldPwd">Текущий пароль</label>
+      <input id="oldPwd" type="password" autocomplete="current-password" />
+      <label for="newPwd">Новый пароль</label>
+      <input id="newPwd" type="password" autocomplete="new-password" />
+      <button type="button" id="chgPwdBtn">Сменить пароль</button>
+      <div id="pwdNotice" class="notice"></div>
+    </section>
+
     <section class="card" style="grid-column: 1 / -1;">
       <h2>Последние 50 пересланных сообщений</h2>
       <ul id="messagesList"></ul>
@@ -159,7 +173,11 @@
     }
 
     async function jget(url, opts) {
-      const r = await fetch(url, opts);
+      const r = await fetch(url, { credentials: 'same-origin', ...opts });
+      if (r.status === 401) {
+        window.location.href = '/';
+        throw new Error('Unauthorized');
+      }
       const text = await r.text();
       if (!r.ok) {
         let msg = text || `HTTP ${r.status}`;
@@ -178,7 +196,7 @@
       return v ? new Date(v).toLocaleString() : '-';
     }
 
-    let tgIdDefault = '632786488';
+    let tgIdDefault = '-5025047503';
 
     function updateTgIdDefaultStyle() {
       const el = document.getElementById('tgId');
@@ -190,7 +208,7 @@
       if (uiConfigApplied) return;
       const data = await jget('/api/config');
       uiConfigApplied = true;
-      tgIdDefault = (data.defaultTelegramChatId && String(data.defaultTelegramChatId).trim()) || '632786488';
+      tgIdDefault = (data.defaultTelegramChatId && String(data.defaultTelegramChatId).trim()) || '-5025047503';
       const el = document.getElementById('tgId');
       if (el && !el.value.trim()) {
         el.value = tgIdDefault;
@@ -385,6 +403,41 @@
     });
 
     document.getElementById('tgId').addEventListener('input', updateTgIdDefaultStyle);
+
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      try {
+        await jget('/api/auth/logout', { method: 'POST' });
+      } catch {
+        /* ignore */
+      }
+      window.location.href = '/';
+    });
+
+    document.getElementById('chgPwdBtn').addEventListener('click', async () => {
+      const notice = document.getElementById('pwdNotice');
+      notice.textContent = '';
+      notice.className = 'notice';
+      const oldPassword = document.getElementById('oldPwd').value;
+      const newPassword = document.getElementById('newPwd').value;
+      if (!oldPassword || !newPassword) {
+        notice.textContent = 'Заполните оба поля';
+        notice.className = 'notice error';
+        return;
+      }
+      try {
+        await jget('/api/auth/password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ oldPassword, newPassword })
+        });
+        document.getElementById('oldPwd').value = '';
+        document.getElementById('newPwd').value = '';
+        notice.textContent = 'Пароль обновлён';
+      } catch (error) {
+        notice.textContent = `Ошибка: ${error.message}`;
+        notice.className = 'notice error';
+      }
+    });
 
     const themeToggle = document.getElementById('themeToggle');
     const savedTheme = localStorage.getItem('theme') || 'light';
