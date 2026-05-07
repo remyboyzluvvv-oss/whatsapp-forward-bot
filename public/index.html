@@ -32,8 +32,9 @@
     .status.connected { color: #0f9d58; }
     .status.disconnected { color: #d93025; }
     .status.restarting { color: #ca8a04; }
-    label, input, select, button { font-size: 14px; }
+    input::placeholder { color: var(--muted); opacity: 0.85; font-style: italic; }
     input, select { width: 100%; padding: 8px; margin-top: 6px; margin-bottom: 10px; box-sizing: border-box; border: 1px solid var(--line); background: var(--card); color: var(--text); }
+    input#tgId.tg-id-muted-default { color: var(--muted); }
     button {
       padding: 8px 12px;
       border: 0;
@@ -126,7 +127,7 @@
       <label for="chatSelect">WhatsApp чат</label>
       <select id="chatSelect"></select>
       <label for="tgId">Telegram канал / чат ID</label>
-      <input id="tgId" placeholder="-1001234567890" />
+      <input id="tgId" type="text" autocomplete="off" spellcheck="false" />
       <button id="addRouteBtn">Добавить маршрут</button>
       <div id="routeNotice" class="notice"></div>
     </section>
@@ -177,14 +178,24 @@
       return v ? new Date(v).toLocaleString() : '-';
     }
 
+    let tgIdDefault = '632786488';
+
+    function updateTgIdDefaultStyle() {
+      const el = document.getElementById('tgId');
+      if (!el) return;
+      el.classList.toggle('tg-id-muted-default', el.value.trim() === tgIdDefault);
+    }
+
     async function loadUiConfig() {
       if (uiConfigApplied) return;
       const data = await jget('/api/config');
       uiConfigApplied = true;
+      tgIdDefault = (data.defaultTelegramChatId && String(data.defaultTelegramChatId).trim()) || '632786488';
       const el = document.getElementById('tgId');
-      if (data.defaultTelegramChatId && el && !el.value.trim()) {
-        el.value = data.defaultTelegramChatId;
+      if (el && !el.value.trim()) {
+        el.value = tgIdDefault;
       }
+      updateTgIdDefaultStyle();
     }
 
     async function loadStatus() {
@@ -372,6 +383,8 @@
     chatSelectEl.addEventListener('change', () => {
       userSelectedChatId = chatSelectEl.value;
     });
+
+    document.getElementById('tgId').addEventListener('input', updateTgIdDefaultStyle);
 
     const themeToggle = document.getElementById('themeToggle');
     const savedTheme = localStorage.getItem('theme') || 'light';

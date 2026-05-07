@@ -6,7 +6,17 @@ const path = require('path');
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const DEFAULT_TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || process.env.CHAT_ID || '';
 const PORT = process.env.PORT || 3000;
-const ROUTES_FILE = path.join(__dirname, 'routes.json');
+const PERSIST_DIR = process.env.PERSIST_DIR ? path.resolve(process.env.PERSIST_DIR) : '';
+
+const ROUTES_FILE = PERSIST_DIR
+  ? path.join(PERSIST_DIR, 'routes.json')
+  : path.join(__dirname, 'routes.json');
+
+const WHATSAPP_AUTH_DATA_PATH = process.env.WHATSAPP_AUTH_PATH
+  ? path.resolve(process.env.WHATSAPP_AUTH_PATH)
+  : PERSIST_DIR
+    ? path.join(PERSIST_DIR, 'whatsapp-web-auth')
+    : path.join(__dirname, '.wwebjs_auth');
 
 if (!TELEGRAM_TOKEN) {
   throw new Error('TELEGRAM_TOKEN is required');
@@ -164,7 +174,7 @@ function resolveChatName(chat) {
 }
 
 const client = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({ dataPath: WHATSAPP_AUTH_DATA_PATH }),
   puppeteer: {
     headless: true,
     args: [
@@ -221,6 +231,10 @@ client.on('disconnected', (reason) => {
 
 async function handleIncomingMessage(msg) {
   try {
+    if (msg.broadcast) {
+      return;
+    }
+
     const msgId = msg?.id?._serialized;
     if (msgId) {
       if (processedMessageIds.has(msgId)) return;
@@ -231,7 +245,8 @@ async function handleIncomingMessage(msg) {
       }
     }
 
-    const candidateChatIds = [msg.from, msg.to, msg.author]
+    const orderedIds = msg.fromMe ? [msg.to, msg.from, msg.author] : [msg.from, msg.to, msg.author];
+    const candidateChatIds = orderedIds
       .filter(Boolean)
       .map((id) => normalizeChatId(id));
     const matchedChatId = candidateChatIds.find((id) => state.monitoredChats.has(id));
@@ -241,7 +256,7 @@ async function handleIncomingMessage(msg) {
     }
 
     const chat = await msg.getChat();
-    const sender = await resolveSenderName(msg);
+    const sender = msg.fromMe ? 'Я (номер бота)' : await resolveSenderName(msg);
     const chatName = resolveChatName(chat);
     const caption = `📢 ${chatName}\n👤 ${sender}`;
 
@@ -311,7 +326,7 @@ http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && pathname === '/api/config') {
       sendJson(res, 200, {
-        defaultTelegramChatId: DEFAULT_TELEGRAM_CHAT_ID || ''
+        defaultTelegramChatId: DEFAULT_TELEGRAM_CHAT_ID || '632786488'
       });
       return;
     }
@@ -487,10 +502,19 @@ http.createServer(async (req, res) => {
   console.log(`Control panel started on port ${PORT}`);
 });
 
-loadRoutesFromDisk()
-  .catch((error) => {
-    console.error('Routes bootstrap error:', error);
-  })
-  .finally(() => {
-    client.initialize();
-  });
+async function bootstrap() {
+  try {
+    if (PERSIST_DIR) {
+      await fs.mkdir(PERSIST_DIR, { recursive: true });
+    }
+    await fs.mkdir(WHATSAPP_AUTH_DATA_PATH, { recursive: true });
+    await loadRoutesFromDisk();
+  } catch (error) {
+    console.error('Bootstrap error:', error);
+  }
+  console.log('WhatsApp auth data path:', WHATSAPP_AUTH_DATA_PATH);
+  console.log('Routes file:', ROUTES_FILE);
+  client.initialize();
+}
+
+bootstrap();
