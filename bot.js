@@ -22,6 +22,16 @@ const state = {
 };
 const processedMessageIds = new Set();
 
+function normalizeChatId(chatId) {
+  const id = String(chatId || '').trim();
+  if (!id) return '';
+  const atIndex = id.indexOf('@');
+  if (atIndex === -1) return id;
+  const local = id.slice(0, atIndex).split(':')[0];
+  const domain = id.slice(atIndex);
+  return `${local}${domain}`;
+}
+
 async function loadRoutesFromDisk() {
   try {
     const content = await fs.readFile(ROUTES_FILE, 'utf8');
@@ -29,7 +39,8 @@ async function loadRoutesFromDisk() {
     if (Array.isArray(parsed)) {
       for (const item of parsed) {
         if (item.chatId && item.telegramChatId) {
-          state.monitoredChats.set(item.chatId, {
+          const normalized = normalizeChatId(item.chatId);
+          state.monitoredChats.set(normalized, {
             chatId: item.chatId,
             chatName: item.chatName || item.chatId,
             telegramChatId: String(item.telegramChatId)
@@ -189,8 +200,9 @@ client.on('ready', async () => {
     const chats = await client.getChats();
     const firstGroup = chats.find((chat) => chat.isGroup);
     if (firstGroup) {
-      state.monitoredChats.set(firstGroup.id._serialized, {
-        chatId: firstGroup.id._serialized,
+      const groupId = firstGroup.id._serialized;
+      state.monitoredChats.set(normalizeChatId(groupId), {
+        chatId: groupId,
         chatName: firstGroup.name,
         telegramChatId: DEFAULT_TELEGRAM_CHAT_ID
       });
@@ -218,7 +230,9 @@ async function handleIncomingMessage(msg) {
       }
     }
 
-    const candidateChatIds = [msg.from, msg.to, msg.author].filter(Boolean);
+    const candidateChatIds = [msg.from, msg.to, msg.author]
+      .filter(Boolean)
+      .map((id) => normalizeChatId(id));
     const matchedChatId = candidateChatIds.find((id) => state.monitoredChats.has(id));
     const route = matchedChatId ? state.monitoredChats.get(matchedChatId) : null;
     if (!route) {
@@ -327,9 +341,10 @@ http.createServer(async (req, res) => {
         sendJson(res, 400, { error: 'chatId and telegramChatId are required' });
         return;
       }
+      const normalizedChatId = normalizeChatId(chatId);
       try {
         const chat = await client.getChatById(chatId);
-        state.monitoredChats.set(chatId, {
+        state.monitoredChats.set(normalizedChatId, {
           chatId,
           chatName: resolveChatName(chat),
           telegramChatId: String(telegramChatId)
@@ -341,7 +356,7 @@ http.createServer(async (req, res) => {
           sendJson(res, 404, { error: 'Chat not found in WhatsApp account' });
           return;
         }
-        state.monitoredChats.set(chatId, {
+        state.monitoredChats.set(normalizedChatId, {
           chatId,
           chatName: String(chatName),
           telegramChatId: String(telegramChatId)
@@ -358,7 +373,7 @@ http.createServer(async (req, res) => {
 
     if (req.method === 'DELETE' && pathname.startsWith('/api/routes/')) {
       const chatId = decodeURIComponent(pathname.replace('/api/routes/', ''));
-      state.monitoredChats.delete(chatId);
+      state.monitoredChats.delete(normalizeChatId(chatId));
       const saved = await saveRoutesToDisk();
       sendJson(res, 200, { ok: true, persisted: saved });
       return;

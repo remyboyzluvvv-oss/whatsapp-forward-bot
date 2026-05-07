@@ -15,7 +15,34 @@
     .status.disconnected { color: #d93025; }
     label, input, select, button { font-size: 14px; }
     input, select { width: 100%; padding: 8px; margin-top: 6px; margin-bottom: 10px; box-sizing: border-box; }
-    button { padding: 8px 12px; border: 0; border-radius: 8px; background: #2563eb; color: white; cursor: pointer; }
+    button {
+      padding: 8px 12px;
+      border: 0;
+      border-radius: 8px;
+      background: #2563eb;
+      color: white;
+      cursor: pointer;
+      transition: transform 120ms ease, opacity 120ms ease, box-shadow 160ms ease, background 160ms ease;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, .08);
+    }
+    button:hover { box-shadow: 0 3px 10px rgba(37, 99, 235, .22); }
+    button:active { transform: scale(0.97); opacity: 0.92; }
+    button:disabled { cursor: not-allowed; opacity: 0.75; }
+    button.is-loading { position: relative; padding-left: 30px; }
+    button.is-loading::before {
+      content: '';
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      width: 12px;
+      height: 12px;
+      margin-top: -6px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, .6);
+      border-top-color: #fff;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
     button.secondary { background: #6b7280; }
     ul { list-style: none; padding: 0; margin: 0; }
     li { border-bottom: 1px solid #e5e7eb; padding: 8px 0; }
@@ -167,6 +194,7 @@
 
       const addBtn = document.getElementById('addRouteBtn');
       addBtn.disabled = true;
+      addBtn.classList.add('is-loading');
       try {
         const result = await jget('/api/routes', {
           method: 'POST',
@@ -183,12 +211,21 @@
         notice.className = 'notice error';
       } finally {
         addBtn.disabled = false;
+        addBtn.classList.remove('is-loading');
       }
     });
 
     document.getElementById('restartBtn').addEventListener('click', async () => {
-      await jget('/api/session/restart', { method: 'POST' });
-      await refresh();
+      const restartBtn = document.getElementById('restartBtn');
+      restartBtn.disabled = true;
+      restartBtn.classList.add('is-loading');
+      try {
+        await jget('/api/session/restart', { method: 'POST' });
+        await refresh();
+      } finally {
+        restartBtn.disabled = false;
+        restartBtn.classList.remove('is-loading');
+      }
     });
 
     async function refresh() {
