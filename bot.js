@@ -3,6 +3,7 @@ const http = require('http');
 const fs = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
+const Database = require('better-sqlite3');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const DEFAULT_TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || process.env.CHAT_ID || '';
@@ -23,6 +24,12 @@ const SETTINGS_FILE = PERSIST_DIR
   ? path.join(PERSIST_DIR, 'admin-settings.json')
   : path.join(__dirname, 'admin-settings.json');
 
+const MESSAGES_DB_FILE = process.env.MESSAGES_DB_PATH
+  ? path.resolve(process.env.MESSAGES_DB_PATH)
+  : PERSIST_DIR
+    ? path.join(PERSIST_DIR, 'messages.sqlite')
+    : path.join(__dirname, 'messages.sqlite');
+
 let adminPassword = process.env.ADMIN_PASSWORD || '1111';
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const sessions = new Map();
@@ -37,9 +44,10 @@ const state = {
   lastActivityAt: null,
   qrData: null,
   monitoredChats: new Map(),
-  recentMessages: [],
   restartInProgress: false
 };
+
+let messagesDb = null;
 const processedMessageIds = new Set();
 
 function normalizeChatId(chatId) {
@@ -86,11 +94,60 @@ async function saveRoutesToDisk() {
   }
 }
 
-function pushRecentMessage(entry) {
-  state.recentMessages.unshift(entry);
-  if (state.recentMessages.length > 50) {
-    state.recentMessages.length = 50;
-  }
+function initMessagesDb() {
+  if (messagesDb) return;
+  messagesDb = new Database(MESSAGES_DB_FILE);
+  messagesDb.pragma('journal_mode = WAL');
+  messagesDb.exec(`
+    CREATE TABLE IF NOT EXISTS forwarded_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      at TEXT NOT NULL,
+      source_chat_id TEXT NOT NULL,
+      source_chat_name TEXT NOT NULL,
+      telegram_chat_id TEXT NOT NULL,
+      sender TEXT NOT NULL,
+      text_preview TEXT NOT NULL
+    );
+  `);
+}
+
+function insertRecentMessage(entry) {
+  if (!messagesDb) return;
+  messagesDb
+    .prepare(
+      `INSERT INTO forwarded_messages (at, source_chat_id, source_chat_name, telegram_chat_id, sender, text_preview)
+       VALUES (@at, @sourceChatId, @sourceChatName, @telegramChatId, @sender, @textPreview)`
+    )
+    .run({
+      at: entry.at,
+      sourceChatId: entry.sourceChatId,
+      sourceChatName: entry.sourceChatName,
+      telegramChatId: entry.telegramChatId,
+      sender: entry.sender,
+      textPreview: entry.textPreview
+    });
+  messagesDb.prepare(
+    `DELETE FROM forwarded_messages WHERE id NOT IN (
+       SELECT id FROM forwarded_messages ORDER BY id DESC LIMIT 50
+     )`
+  ).run();
+}
+
+function getRecentMessages() {
+  if (!messagesDb) return [];
+  return messagesDb
+    .prepare(
+      `SELECT at,
+              source_chat_id AS sourceChatId,
+              source_chat_name AS sourceChatName,
+              telegram_chat_id AS telegramChatId,
+              sender,
+              text_preview AS textPreview
+       FROM forwarded_messages
+       ORDER BY id DESC
+       LIMIT 50`
+    )
+    .all();
 }
 
 async function sendTelegramMessage(endpoint, body) {
@@ -381,7 +438,7 @@ async function handleIncomingMessage(msg) {
     }
 
     state.lastActivityAt = new Date().toISOString();
-    pushRecentMessage({
+    insertRecentMessage({
       at: state.lastActivityAt,
       sourceChatId: route.chatId,
       sourceChatName: route.chatName || chatName,
@@ -661,7 +718,7 @@ http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && pathname === '/api/messages') {
-      sendJson(res, 200, { items: state.recentMessages });
+      sendJson(res, 200, { items: getRecentMessages() });
       return;
     }
 
@@ -726,6 +783,16 @@ async function bootstrap() {
       await fs.mkdir(PERSIST_DIR, { recursive: true });
     }
     await fs.mkdir(WHATSAPP_AUTH_DATA_PATH, { recursive: true });
+    const dbDir = path.dirname(MESSAGES_DB_FILE);
+    if (dbDir && dbDir !== '.') {
+      await fs.mkdir(dbDir, { recursive: true });
+    }
+    try {
+      initMessagesDb();
+    } catch (e) {
+      console.error('Messages DB init failed:', e.message || e);
+      messagesDb = null;
+    }
     await loadRoutesFromDisk();
     await loadAdminSettings();
   } catch (error) {
@@ -733,6 +800,7 @@ async function bootstrap() {
   }
   console.log('WhatsApp auth data path:', WHATSAPP_AUTH_DATA_PATH);
   console.log('Routes file:', ROUTES_FILE);
+  console.log('Messages DB:', MESSAGES_DB_FILE);
   try {
     await client.initialize();
   } catch (e) {

@@ -3,3 +3,6 @@ node_modules/
 .wwebjs_cache/
 .env
 admin-settings.json
+messages.sqlite
+messages.sqlite-shm
+messages.sqlite-wal

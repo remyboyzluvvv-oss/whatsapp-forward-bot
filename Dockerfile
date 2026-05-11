@@ -2,6 +2,9 @@ FROM node:20
 
 # Устанавливаем зависимости для Chrome
 RUN apt-get update && apt-get install -y \
+    python3 \
+    make \
+    g++ \
     wget \
     gnupg \
     ca-certificates \
