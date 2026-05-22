@@ -342,7 +342,8 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chatId, chatName, telegramChatId })
         });
-        document.getElementById('tgId').value = '';
+        document.getElementById('tgId').value = tgIdDefault;
+        updateTgIdDefaultStyle();
         if (result.monitored) {
           renderRoutesList(result.monitored);
         } else {
