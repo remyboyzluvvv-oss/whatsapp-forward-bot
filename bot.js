@@ -4,6 +4,12 @@ const fs = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
+const {
+  isHermesConfigured,
+  hermesHealth,
+  askHermes,
+  extractHermesPrompt
+} = require('./hermes');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const DEFAULT_TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || process.env.CHAT_ID || '';
@@ -71,7 +77,8 @@ async function loadRoutesFromDisk() {
           state.monitoredChats.set(normalized, {
             chatId: item.chatId,
             chatName: item.chatName || item.chatId,
-            telegramChatId: String(item.telegramChatId)
+            telegramChatId: String(item.telegramChatId),
+            aiEnabled: Boolean(item.aiEnabled)
           });
         }
       }
@@ -314,7 +321,8 @@ client.on('ready', async () => {
       state.monitoredChats.set(normalizeChatId(groupId), {
         chatId: groupId,
         chatName: firstGroup.name,
-        telegramChatId: DEFAULT_TELEGRAM_CHAT_ID
+        telegramChatId: DEFAULT_TELEGRAM_CHAT_ID,
+        aiEnabled: false
       });
       await saveRoutesToDisk();
       console.log(`Default route added for ${firstGroup.name}`);
@@ -425,6 +433,10 @@ async function handleIncomingMessage(msg) {
       return;
     }
 
+    const hermesPrompt = route.aiEnabled && isHermesConfigured()
+      ? extractHermesPrompt(msg.body)
+      : null;
+
     const chat = await msg.getChat();
     const sender = msg.fromMe ? 'Я (номер бота)' : await resolveSenderName(msg);
     const chatName = resolveChatName(chat);
@@ -446,6 +458,27 @@ async function handleIncomingMessage(msg) {
       sender,
       textPreview: msg.body || '[media]'
     });
+
+    if (hermesPrompt !== null && !msg.fromMe) {
+      try {
+        const replyTarget = chat.id._serialized || route.chatId;
+        await client.sendMessage(replyTarget, '🤖 Hermes думает…');
+        const answer = await askHermes(hermesPrompt || 'Привет', {
+          chatName: route.chatName || chatName,
+          sender
+        });
+        const trimmed = answer.length > 4000 ? `${answer.slice(0, 3990)}…` : answer;
+        await client.sendMessage(replyTarget, trimmed);
+        console.log('Hermes reply sent to', replyTarget);
+      } catch (aiErr) {
+        console.error('Hermes error:', aiErr.message || aiErr);
+        try {
+          await client.sendMessage(chat.id._serialized || route.chatId, `❌ Hermes: ${aiErr.message || aiErr}`);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
   } catch (error) {
     console.error('Message processing error:', error);
   }
@@ -625,8 +658,19 @@ http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && pathname === '/api/config') {
       sendJson(res, 200, {
-        defaultTelegramChatId: DEFAULT_TELEGRAM_CHAT_ID || '-5025047503'
+        defaultTelegramChatId: DEFAULT_TELEGRAM_CHAT_ID || '-5025047503',
+        hermesConfigured: isHermesConfigured()
       });
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/hermes/status') {
+      if (!isHermesConfigured()) {
+        sendJson(res, 200, { configured: false, ok: false, hint: 'Задайте HERMES_API_URL в Railway' });
+        return;
+      }
+      const health = await hermesHealth();
+      sendJson(res, 200, { configured: true, ...health });
       return;
     }
 
@@ -676,8 +720,8 @@ http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && pathname === '/api/routes') {
       const body = await readRequestBody(req);
-      const { chatId, telegramChatId, chatName: chatNameRaw } = body;
-      console.log('POST /api/routes body:', { chatId, telegramChatId, chatName: chatNameRaw });
+      const { chatId, telegramChatId, chatName: chatNameRaw, aiEnabled } = body;
+      console.log('POST /api/routes body:', { chatId, telegramChatId, chatName: chatNameRaw, aiEnabled });
 
       if (!chatId || !telegramChatId) {
         sendJson(res, 400, { error: 'chatId and telegramChatId are required' });
@@ -691,7 +735,8 @@ http.createServer(async (req, res) => {
       state.monitoredChats.set(mapKey, {
         chatId,
         chatName: fastName,
-        telegramChatId: String(telegramChatId)
+        telegramChatId: String(telegramChatId),
+        aiEnabled: Boolean(aiEnabled)
       });
       const saved = await saveRoutesToDisk();
       console.log('Route saved (fast path):', mapKey, fastName);

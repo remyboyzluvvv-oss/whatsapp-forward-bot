@@ -132,8 +132,21 @@
       <select id="chatSelect"></select>
       <label for="tgId">Telegram канал / чат ID</label>
       <input id="tgId" type="text" autocomplete="off" spellcheck="false" />
+      <label class="theme-switch" style="margin-top: 4px;">
+        <input id="aiEnabled" type="checkbox" />
+        <span>ИИ Hermes в этом чате (команды <code>/ai</code>, <code>/hermes</code>, <code>/ии</code>)</span>
+      </label>
       <button id="addRouteBtn">Добавить маршрут</button>
       <div id="routeNotice" class="notice"></div>
+    </section>
+
+    <section class="card">
+      <h2>Hermes Agent</h2>
+      <div id="hermesStatus" class="muted">Проверка…</div>
+      <p class="muted" style="margin-top: 8px;">
+        Hermes — отдельный сервис с API. Вход не через сайт, а через <code>hermes setup</code> (ключ OpenRouter и др.).
+        В Railway у бота задайте <code>HERMES_API_URL</code> и <code>HERMES_API_KEY</code>.
+      </p>
     </section>
 
     <section class="card">
@@ -204,6 +217,29 @@
       el.classList.toggle('tg-id-muted-default', el.value.trim() === tgIdDefault);
     }
 
+    async function loadHermesStatus() {
+      const el = document.getElementById('hermesStatus');
+      if (!el) return;
+      try {
+        const data = await jget('/api/hermes/status');
+        if (!data.configured) {
+          el.textContent = 'Не настроен: добавьте HERMES_API_URL в Railway';
+          el.className = 'notice error';
+          return;
+        }
+        if (data.ok) {
+          el.textContent = `Подключён: ${data.url || 'Hermes API'}`;
+          el.className = 'notice';
+        } else {
+          el.textContent = `Недоступен (${data.error || 'нет ответа'}). Запустите hermes gateway на сервере.`;
+          el.className = 'notice error';
+        }
+      } catch {
+        el.textContent = 'Не удалось проверить Hermes';
+        el.className = 'notice error';
+      }
+    }
+
     async function loadUiConfig() {
       if (uiConfigApplied) return;
       const data = await jget('/api/config');
@@ -254,6 +290,7 @@
             <div><strong>${esc(r.chatName || r.chatId)}</strong></div>
             <div class="muted">WA: ${esc(r.chatId)}</div>
             <div class="muted">→ Telegram: ${esc(r.telegramChatId)}</div>
+            <div class="muted">${r.aiEnabled ? '🤖 Hermes: вкл (пишите /ai вопрос)' : 'Hermes: выкл'}</div>
             <button onclick="removeRoute('${encodeURIComponent(r.chatId)}')">Убрать</button>
           </li>
         `).join('')
@@ -337,10 +374,11 @@
       addBtn.disabled = true;
       addBtn.classList.add('is-loading');
       try {
+        const aiEnabled = document.getElementById('aiEnabled').checked;
         const result = await jget('/api/routes', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chatId, chatName, telegramChatId })
+          body: JSON.stringify({ chatId, chatName, telegramChatId, aiEnabled })
         });
         document.getElementById('tgId').value = tgIdDefault;
         updateTgIdDefaultStyle();
@@ -385,6 +423,7 @@
       await Promise.allSettled([
         loadStatus(),
         loadUiConfig(),
+        loadHermesStatus(),
         loadQr(),
         loadMonitoredRoutes(),
         loadChatDropdown(),
