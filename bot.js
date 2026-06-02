@@ -192,6 +192,12 @@ function getRecentMessages() {
     .all();
 }
 
+function clearRecentMessages() {
+  if (!messagesDb) return 0;
+  const result = messagesDb.prepare('DELETE FROM forwarded_messages').run();
+  return result.changes;
+}
+
 async function sendTelegramMessage(endpoint, body) {
   const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/${endpoint}`, body);
   const result = await response.json();
@@ -824,6 +830,12 @@ http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && pathname === '/api/messages') {
       sendJson(res, 200, { items: getRecentMessages() });
+      return;
+    }
+
+    if (req.method === 'DELETE' && pathname === '/api/messages') {
+      const deleted = clearRecentMessages();
+      sendJson(res, 200, { ok: true, deleted });
       return;
     }
 

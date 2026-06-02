@@ -165,7 +165,11 @@
     </section>
 
     <section class="card" style="grid-column: 1 / -1;">
-      <h2>Последние 50 пересланных сообщений</h2>
+      <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 12px;">
+        <h2 style="margin: 0;">Последние 50 пересланных сообщений</h2>
+        <button type="button" id="clearMessagesBtn" class="secondary">Очистить список</button>
+      </div>
+      <div id="messagesNotice" class="notice"></div>
       <ul id="messagesList"></ul>
     </section>
   </div>
@@ -331,12 +335,35 @@
       list.innerHTML = data.items.length
         ? data.items.map(m => `
           <li>
-            <div><strong>${m.sourceChatName}</strong> → ${m.telegramChatId}</div>
-            <div>${m.sender}: ${m.textPreview}</div>
+            <div><strong>${esc(m.sourceChatName)}</strong> → ${esc(m.telegramChatId)}</div>
+            <div>${esc(m.sender)}: ${esc(m.textPreview)}</div>
             <div class="muted">${fmtDate(m.at)}</div>
           </li>
         `).join('')
         : '<li class="muted">Пока нет пересланных сообщений</li>';
+    }
+
+    async function clearMessages() {
+      if (!confirm('Удалить все записи из списка последних сообщений?')) return;
+      const notice = document.getElementById('messagesNotice');
+      const btn = document.getElementById('clearMessagesBtn');
+      notice.textContent = '';
+      notice.className = 'notice';
+      btn.disabled = true;
+      btn.classList.add('is-loading');
+      try {
+        const result = await jget('/api/messages', { method: 'DELETE' });
+        await loadMessages();
+        notice.textContent = result.deleted
+          ? `Удалено записей: ${result.deleted}`
+          : 'Список уже пуст';
+      } catch (error) {
+        notice.textContent = `Ошибка: ${error.message}`;
+        notice.className = 'notice error';
+      } finally {
+        btn.disabled = false;
+        btn.classList.remove('is-loading');
+      }
     }
 
     async function removeRoute(routeId) {
@@ -481,6 +508,8 @@
         notice.className = 'notice error';
       }
     });
+
+    document.getElementById('clearMessagesBtn').addEventListener('click', clearMessages);
 
     const themeToggle = document.getElementById('themeToggle');
     const savedTheme = localStorage.getItem('theme') || 'light';
