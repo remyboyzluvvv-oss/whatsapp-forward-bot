@@ -877,6 +877,17 @@ http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'GET' && pathname === '/background.jpg') {
+      const imagePath = path.join(__dirname, 'public', 'background.jpg');
+      const image = await fs.readFile(imagePath);
+      res.writeHead(200, {
+        'Content-Type': 'image/jpeg',
+        'Cache-Control': 'public, max-age=86400'
+      });
+      res.end(image);
+      return;
+    }
+
     if (req.method === 'GET' && pathname === '/') {
       const htmlFile = isAuthenticated(req) ? 'index.html' : 'login.html';
       const html = await fs.readFile(path.join(__dirname, 'public', htmlFile), 'utf8');
