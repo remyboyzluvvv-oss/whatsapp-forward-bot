@@ -49,9 +49,44 @@ const state = {
   phoneNumber: null,
   lastActivityAt: null,
   qrData: null,
-  monitoredChats: new Map(),
+  routes: [],
   restartInProgress: false
 };
+
+function makeRouteId() {
+  return crypto.randomBytes(8).toString('hex');
+}
+
+function getRoutesList() {
+  return state.routes;
+}
+
+function findRoutesForWhatsAppChat(candidateChatIds) {
+  const normalizedSet = new Set(candidateChatIds.map((id) => normalizeChatId(id)));
+  return state.routes.filter((r) => normalizedSet.has(normalizeChatId(r.chatId)));
+}
+
+function upsertRoute(route) {
+  const waKey = normalizeChatId(route.chatId);
+  const tgId = String(route.telegramChatId);
+  const idx = state.routes.findIndex(
+    (r) => normalizeChatId(r.chatId) === waKey && String(r.telegramChatId) === tgId
+  );
+  const entry = {
+    id: route.id || makeRouteId(),
+    chatId: route.chatId,
+    chatName: route.chatName || route.chatId,
+    telegramChatId: tgId,
+    aiEnabled: Boolean(route.aiEnabled)
+  };
+  if (idx >= 0) {
+    entry.id = state.routes[idx].id;
+    state.routes[idx] = entry;
+    return { route: entry, created: false };
+  }
+  state.routes.push(entry);
+  return { route: entry, created: true };
+}
 
 let messagesDb = null;
 const processedMessageIds = new Set();
@@ -71,10 +106,11 @@ async function loadRoutesFromDisk() {
     const content = await fs.readFile(ROUTES_FILE, 'utf8');
     const parsed = JSON.parse(content);
     if (Array.isArray(parsed)) {
+      state.routes = [];
       for (const item of parsed) {
         if (item.chatId && item.telegramChatId) {
-          const normalized = normalizeChatId(item.chatId);
-          state.monitoredChats.set(normalized, {
+          upsertRoute({
+            id: item.id || makeRouteId(),
             chatId: item.chatId,
             chatName: item.chatName || item.chatId,
             telegramChatId: String(item.telegramChatId),
@@ -91,9 +127,8 @@ async function loadRoutesFromDisk() {
 }
 
 async function saveRoutesToDisk() {
-  const routes = Array.from(state.monitoredChats.values());
   try {
-    await fs.writeFile(ROUTES_FILE, JSON.stringify(routes, null, 2), 'utf8');
+    await fs.writeFile(ROUTES_FILE, JSON.stringify(getRoutesList(), null, 2), 'utf8');
     return true;
   } catch (error) {
     console.error('Failed to save routes file:', error.message);
@@ -313,12 +348,12 @@ client.on('ready', async () => {
   state.phoneNumber = info?.wid?.user || null;
   console.log('WhatsApp is ready');
 
-  if (DEFAULT_TELEGRAM_CHAT_ID && state.monitoredChats.size === 0) {
+  if (DEFAULT_TELEGRAM_CHAT_ID && state.routes.length === 0) {
     const chats = await client.getChats();
     const firstGroup = chats.find((chat) => chat.isGroup);
     if (firstGroup) {
       const groupId = firstGroup.id._serialized;
-      state.monitoredChats.set(normalizeChatId(groupId), {
+      upsertRoute({
         chatId: groupId,
         chatName: firstGroup.name,
         telegramChatId: DEFAULT_TELEGRAM_CHAT_ID,
@@ -427,44 +462,57 @@ async function handleIncomingMessage(msg) {
     const candidateChatIds = orderedIds
       .filter(Boolean)
       .map((id) => normalizeChatId(id));
-    const matchedChatId = candidateChatIds.find((id) => state.monitoredChats.has(id));
-    const route = matchedChatId ? state.monitoredChats.get(matchedChatId) : null;
-    if (!route) {
+    const routes = findRoutesForWhatsAppChat(candidateChatIds);
+    if (!routes.length) {
       return;
     }
 
-    const hermesPrompt = route.aiEnabled && isHermesConfigured()
-      ? extractHermesPrompt(msg.body)
-      : null;
+    const hermesPrompt =
+      routes.some((r) => r.aiEnabled) && isHermesConfigured()
+        ? extractHermesPrompt(msg.body)
+        : null;
 
     const chat = await msg.getChat();
     const sender = msg.fromMe ? 'Я (номер бота)' : await resolveSenderName(msg);
     const chatName = resolveChatName(chat);
     const caption = `📢 ${chatName}\n👤 ${sender}`;
 
-    if (msg.hasMedia) {
-      const mediaCaption = msg.body ? `${caption}\n💬 ${msg.body}` : caption;
-      await sendMediaToTelegram(route.telegramChatId, msg, mediaCaption);
-    } else {
-      await sendTextToTelegram(route.telegramChatId, `${caption}\n💬 ${msg.body || '[пустое сообщение]'}`);
+    for (const route of routes) {
+      try {
+        if (msg.hasMedia) {
+          const mediaCaption = msg.body ? `${caption}\n💬 ${msg.body}` : caption;
+          await sendMediaToTelegram(route.telegramChatId, msg, mediaCaption);
+        } else {
+          await sendTextToTelegram(
+            route.telegramChatId,
+            `${caption}\n💬 ${msg.body || '[пустое сообщение]'}`
+          );
+        }
+
+        state.lastActivityAt = new Date().toISOString();
+        insertRecentMessage({
+          at: state.lastActivityAt,
+          sourceChatId: route.chatId,
+          sourceChatName: route.chatName || chatName,
+          telegramChatId: route.telegramChatId,
+          sender,
+          textPreview: msg.body || '[media]'
+        });
+      } catch (routeErr) {
+        console.error(
+          `Forward error → ${route.telegramChatId}:`,
+          routeErr.message || routeErr
+        );
+      }
     }
 
-    state.lastActivityAt = new Date().toISOString();
-    insertRecentMessage({
-      at: state.lastActivityAt,
-      sourceChatId: route.chatId,
-      sourceChatName: route.chatName || chatName,
-      telegramChatId: route.telegramChatId,
-      sender,
-      textPreview: msg.body || '[media]'
-    });
-
     if (hermesPrompt !== null && !msg.fromMe) {
+      const primaryRoute = routes[0];
       try {
-        const replyTarget = chat.id._serialized || route.chatId;
+        const replyTarget = chat.id._serialized || primaryRoute.chatId;
         await client.sendMessage(replyTarget, '🤖 Hermes думает…');
         const answer = await askHermes(hermesPrompt || 'Привет', {
-          chatName: route.chatName || chatName,
+          chatName: primaryRoute.chatName || chatName,
           sender
         });
         const trimmed = answer.length > 4000 ? `${answer.slice(0, 3990)}…` : answer;
@@ -473,7 +521,10 @@ async function handleIncomingMessage(msg) {
       } catch (aiErr) {
         console.error('Hermes error:', aiErr.message || aiErr);
         try {
-          await client.sendMessage(chat.id._serialized || route.chatId, `❌ Hermes: ${aiErr.message || aiErr}`);
+          await client.sendMessage(
+            chat.id._serialized || primaryRoute.chatId,
+            `❌ Hermes: ${aiErr.message || aiErr}`
+          );
         } catch {
           /* ignore */
         }
@@ -699,13 +750,13 @@ http.createServer(async (req, res) => {
 
         sendJson(res, 200, {
           allChats,
-          monitored: Array.from(state.monitoredChats.values()),
+          monitored: getRoutesList(),
           whatsappReady: true
         });
       } catch (error) {
         sendJson(res, 200, {
           allChats: [],
-          monitored: Array.from(state.monitoredChats.values()),
+          monitored: getRoutesList(),
           whatsappReady: false,
           error: 'WhatsApp is not ready yet'
         });
@@ -714,7 +765,7 @@ http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && pathname === '/api/routes') {
-      sendJson(res, 200, { monitored: Array.from(state.monitoredChats.values()) });
+      sendJson(res, 200, { monitored: getRoutesList() });
       return;
     }
 
@@ -729,35 +780,44 @@ http.createServer(async (req, res) => {
       }
 
       const hint = (chatNameRaw && String(chatNameRaw).trim()) || '';
-      const mapKey = normalizeChatId(chatId);
       const fastName = hint || `Чат ${String(chatId).split('@')[0]}`;
 
-      state.monitoredChats.set(mapKey, {
+      const { route, created } = upsertRoute({
         chatId,
         chatName: fastName,
         telegramChatId: String(telegramChatId),
         aiEnabled: Boolean(aiEnabled)
       });
       const saved = await saveRoutesToDisk();
-      console.log('Route saved (fast path):', mapKey, fastName);
+      console.log(
+        created ? 'Route added:' : 'Route updated:',
+        normalizeChatId(chatId),
+        route.telegramChatId
+      );
 
       sendJson(res, 200, {
         ok: true,
+        created,
         persisted: saved,
-        monitored: Array.from(state.monitoredChats.values())
+        monitored: getRoutesList()
       });
 
       return;
     }
 
     if (req.method === 'DELETE' && pathname.startsWith('/api/routes/')) {
-      const chatId = decodeURIComponent(pathname.replace('/api/routes/', ''));
-      state.monitoredChats.delete(normalizeChatId(chatId));
+      const routeId = decodeURIComponent(pathname.replace('/api/routes/', ''));
+      const before = state.routes.length;
+      state.routes = state.routes.filter((r) => r.id !== routeId);
+      if (state.routes.length === before) {
+        sendJson(res, 404, { error: 'Route not found' });
+        return;
+      }
       const saved = await saveRoutesToDisk();
       sendJson(res, 200, {
         ok: true,
         persisted: saved,
-        monitored: Array.from(state.monitoredChats.values())
+        monitored: getRoutesList()
       });
       return;
     }

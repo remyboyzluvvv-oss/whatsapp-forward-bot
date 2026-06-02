@@ -291,7 +291,7 @@
             <div class="muted">WA: ${esc(r.chatId)}</div>
             <div class="muted">→ Telegram: ${esc(r.telegramChatId)}</div>
             <div class="muted">${r.aiEnabled ? '🤖 Hermes: вкл (пишите /ai вопрос)' : 'Hermes: выкл'}</div>
-            <button onclick="removeRoute('${encodeURIComponent(r.chatId)}')">Убрать</button>
+            <button onclick="removeRoute('${encodeURIComponent(r.id)}')">Убрать</button>
           </li>
         `).join('')
         : '<li class="muted">Нет подключённых чатов</li>';
@@ -339,8 +339,8 @@
         : '<li class="muted">Пока нет пересланных сообщений</li>';
     }
 
-    async function removeRoute(chatId) {
-      const result = await jget(`/api/routes/${chatId}`, { method: 'DELETE' });
+    async function removeRoute(routeId) {
+      const result = await jget(`/api/routes/${routeId}`, { method: 'DELETE' });
       renderRoutesList(result.monitored);
       await loadChatDropdown();
     }
@@ -388,11 +388,14 @@
           await loadMonitoredRoutes();
         }
         await loadChatDropdown(true);
+        const actionLabel = result.created === false
+          ? 'Маршрут обновлён (тот же WhatsApp и Telegram ID)'
+          : 'Маршрут добавлен';
         notice.textContent = result.warning
-          ? `${result.persisted ? 'Маршрут добавлен' : 'Маршрут добавлен (в памяти)'}. ${result.warning}`
+          ? `${result.persisted ? actionLabel : `${actionLabel} (в памяти)`}. ${result.warning}`
           : result.persisted
-            ? 'Маршрут добавлен'
-            : 'Маршрут добавлен (в памяти текущей сессии)';
+            ? actionLabel
+            : `${actionLabel} (в памяти текущей сессии)`;
       } catch (error) {
         notice.textContent = `Ошибка: ${error.message}`;
         notice.className = 'notice error';
